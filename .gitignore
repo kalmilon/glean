@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# uv
+.uv/
+
+# glean runtime
+glean-out/
+*.wav
+*.mp3
+*.m4a
+models/
+*.bin
+
+# secrets / local
+.env
+*.local
+
+# os
+.DS_Store
