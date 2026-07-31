@@ -160,3 +160,53 @@ def test_doctor_resolvers(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", "")
     assert setup_cmd._whisper_bin({}, cfg) == str(built)
     assert setup_cmd._whisper_bin({}) is None
+
+
+def test_single_target_honours_run_dir(monkeypatch, tmp_path):
+    """`--run-dir` on one video must land its job dir and manifest under DIR.
+
+    It used to be wired into the discovery verbs only, so passing it with a single video parsed,
+    exited 0 and wrote nothing — a silent no-op that reads as success.
+    """
+    from glean import cli, pipeline
+
+    captured = {}
+
+    def fake_transcribe_url(url, cfg, backend=None, captions=False):
+        captured["out_dir"] = cfg.out_dir
+        captured["captions"] = captions
+        return Result(
+            item=MediaItem(source="youtube", url=url, id="aaaaaaaaaaa", title="One"),
+            transcript=Transcript(text="hi", words=[Word(text="hi", start=0.0, end=1.0)], language="en", backend="test", model="test"),
+            out_dir=str(tmp_path / "job"),
+            files={},
+        )
+
+    monkeypatch.setattr(pipeline, "transcribe_url", fake_transcribe_url)
+
+    run_dir = tmp_path / "run1"
+    args = SimpleNamespace(run_dir=str(run_dir), run_note="a note", captions=True)
+    rc = cli._transcribe_one("https://youtu.be/aaaaaaaaaaa", args, Config.resolve())
+
+    assert rc == 0
+    assert captured["out_dir"] == run_dir, "cfg.out_dir must point at the run dir before transcription"
+    assert captured["captions"] is True, "--captions must reach every single-target path"
+
+    data = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert data["kind"] == "transcribe"
+    assert data["note"] == "a note"
+    assert data["transcribed"] is True
+    assert data["count"] == 1
+
+
+def test_run_flags_accepted_on_every_transcribing_command():
+    """url/twitch/x gained the run-manifest flags that previously lived on yt and ig alone."""
+    from glean.cli import build_parser
+
+    parser = build_parser()
+    for cmd in ("url", "yt", "ig", "twitch", "x"):
+        args = parser.parse_args([cmd, "https://example.com/v", "--run-dir", "d", "--run-note", "n"])
+        assert args.run_dir == "d" and args.run_note == "n", cmd
+
+    # `url` delegates to the YouTube path, so it must accept YouTube's own flag too.
+    assert parser.parse_args(["url", "https://youtu.be/x", "--captions"]).captions is True

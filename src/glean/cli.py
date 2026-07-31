@@ -31,33 +31,40 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--json", action="store_true", help="emit machine-readable JSON to stdout")
     common.add_argument("--keep-audio", action="store_true", dest="keep_audio", help="keep the downloaded source audio")
 
+    # Run-manifest flags belong to every command that produces job dirs, which is all of them except
+    # setup and doctor. They lived on yt and ig alone, so the same run collected through `url`,
+    # `twitch` or `x` had nowhere to go — and the shorthand was less capable than what it delegates to.
+    runflags = argparse.ArgumentParser(add_help=False)
+    runflags.add_argument("--run-dir", metavar="DIR", dest="run_dir", help="collect this run's job dirs under DIR and write a run.json manifest")
+    runflags.add_argument("--run-note", metavar="TEXT", dest="run_note", help="a note recorded in the run.json manifest")
+
     parser = argparse.ArgumentParser(prog="glean", description="Local-first transcript + metadata research tool.")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
-    p_url = sub.add_parser("url", parents=[common], help="auto-detect the platform then transcribe")
+    p_url = sub.add_parser("url", parents=[common, runflags], help="auto-detect the platform then transcribe")
     p_url.add_argument("target", help="any supported media URL")
+    # `url` dispatches to the YouTube path for a YouTube link, so rejecting YouTube's own flag here
+    # made the shorthand quietly less capable than the command it delegates to. It is inert for the
+    # other platforms, which is already what --captions means for a video that has no captions.
+    p_url.add_argument("--captions", action="store_true", help="use the platform's own captions instead of local transcription (YouTube only)")
 
-    p_yt = sub.add_parser("yt", parents=[common], help="YouTube: a video URL/ID, or `channel <@handle>` / `search <query>`")
+    p_yt = sub.add_parser("yt", parents=[common, runflags], help="YouTube: a video URL/ID, or `channel <@handle>` / `search <query>`")
     p_yt.add_argument("target", nargs="+", metavar="TARGET", help="video URL/ID, or `channel <@handle>` / `search <query>`")
     p_yt.add_argument("--limit", type=int, default=30, help="max items for channel/search (default 30)")
     p_yt.add_argument("--transcribe", action="store_true", help="transcribe every channel/search result (default: metadata only)")
     p_yt.add_argument("--captions", action="store_true", help="use YouTube's own captions instead of local transcription (YouTube only)")
-    p_yt.add_argument("--run-dir", metavar="DIR", dest="run_dir", help="collect this run's job dirs under DIR and write a run.json manifest")
-    p_yt.add_argument("--run-note", metavar="TEXT", dest="run_note", help="a note recorded in the run.json manifest")
 
-    p_ig = sub.add_parser("ig", parents=[common], help="Instagram: reel URL, `list`/`scout <@acct>`, `profile <@handle>`, `search <query>`")
+    p_ig = sub.add_parser("ig", parents=[common, runflags], help="Instagram: reel URL, `list`/`scout <@acct>`, `profile <@handle>`, `search <query>`")
     p_ig.add_argument("target", nargs="+", metavar="TARGET", help="reel URL, or `list`/`scout <@acct>`, `profile <@handle>`, `search <query>`")
     p_ig.add_argument("--limit", type=int, default=24, help="max results for `list`/`search` (default 24)")
     p_ig.add_argument("--top", type=int, default=30, help="max results for `scout` (default 30)")
     p_ig.add_argument("--since-days", type=int, default=90, dest="since_days", help="`scout` recency window in days (default 90)")
     p_ig.add_argument("--transcribe", action="store_true", help="transcribe every list/scout result (default: metadata only)")
-    p_ig.add_argument("--run-dir", metavar="DIR", dest="run_dir", help="collect this run's job dirs under DIR and write a run.json manifest")
-    p_ig.add_argument("--run-note", metavar="TEXT", dest="run_note", help="a note recorded in the run.json manifest")
 
-    p_tw = sub.add_parser("twitch", parents=[common], help="Twitch VOD or clip → transcribe")
+    p_tw = sub.add_parser("twitch", parents=[common, runflags], help="Twitch VOD or clip → transcribe")
     p_tw.add_argument("target", help="a Twitch VOD or clip URL")
 
-    p_x = sub.add_parser("x", parents=[common], help="X (Twitter) video → transcribe")
+    p_x = sub.add_parser("x", parents=[common, runflags], help="X (Twitter) video → transcribe")
     p_x.add_argument("target", help="a tweet URL containing video")
 
     sub.add_parser("setup", parents=[common], help="bootstrap local dependencies (whisper.cpp + model on Linux)")
@@ -66,16 +73,35 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _transcribe_one(url: str, cfg: Config) -> int:
+def _transcribe_one(url: str, args, cfg: Config) -> int:
+    """Transcribe a single target, honouring `--run-dir` the way a discovery run does.
+
+    One video is still a run: setting cfg.out_dir first puts its job dir inside the run directory,
+    and the manifest records it. Without this the flag parsed, exited 0 and wrote nothing, which is
+    the one failure that reads as success. `--captions` is read here too so that every single-target
+    path shares it rather than only the one command that branched early for it.
+    """
     from glean import pipeline
-    result = pipeline.transcribe_url(url, cfg, backend=cfg.backend)
+    run_dir = getattr(args, "run_dir", None)
+    if run_dir:
+        cfg.out_dir = Path(run_dir)
+    result = pipeline.transcribe_url(
+        url, cfg, backend=cfg.backend, captions=bool(getattr(args, "captions", False))
+    )
     _emit_result(result, cfg)
+    if run_dir:
+        from glean.output import write_run_manifest
+        path = write_run_manifest(
+            run_dir, "transcribe", {"target": url}, [result],
+            note=getattr(args, "run_note", None), transcribed=True,
+        )
+        print(f"run: {path}", file=sys.stderr)
     return 0
 
 
 def _cmd_url(args, cfg: Config) -> int:
     detect_source(args.target)  # raises ValueError with a clear message if unrecognised
-    return _transcribe_one(args.target, cfg)
+    return _transcribe_one(args.target, args, cfg)
 
 
 def _cmd_yt(args, parser: argparse.ArgumentParser, cfg: Config) -> int:
@@ -94,11 +120,7 @@ def _cmd_yt(args, parser: argparse.ArgumentParser, cfg: Config) -> int:
         from glean.sources import youtube
         items = youtube.search(query, cfg, limit=args.limit)
         return _run_discovery(items, "yt-search", {"query": query, "limit": args.limit}, args, cfg)
-    if args.captions:
-        from glean import pipeline
-        _emit_result(pipeline.transcribe_url(tokens[0], cfg, backend=cfg.backend, captions=True), cfg)
-        return 0
-    return _transcribe_one(tokens[0], cfg)
+    return _transcribe_one(tokens[0], args, cfg)
 
 
 def _cmd_ig(args, parser: argparse.ArgumentParser, cfg: Config) -> int:
@@ -128,7 +150,7 @@ def _cmd_ig(args, parser: argparse.ArgumentParser, cfg: Config) -> int:
             parser.error("ig search needs a <query>")
         from glean.sources import instagram
         return _run_profiles(instagram.search(query, cfg, limit=args.limit), "ig-search", {"query": query, "limit": args.limit}, args, cfg)
-    return _transcribe_one(tokens[0], cfg)
+    return _transcribe_one(tokens[0], args, cfg)
 
 
 def _cmd_setup(cfg: Config) -> int:
@@ -256,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "ig":
             return _cmd_ig(args, parser, cfg)
         if args.command in ("twitch", "x"):
-            return _transcribe_one(args.target, cfg)
+            return _transcribe_one(args.target, args, cfg)
         if args.command == "setup":
             return _cmd_setup(cfg)
         if args.command == "doctor":
