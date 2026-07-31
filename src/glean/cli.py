@@ -110,8 +110,7 @@ def _cmd_ig(args, parser: argparse.ArgumentParser, cfg: Config) -> int:
 
 def _cmd_setup(cfg: Config) -> int:
     from glean import setup_cmd
-    setup_cmd.run_setup(cfg)
-    return 0
+    return setup_cmd.run_setup(cfg)
 
 
 def _cmd_doctor(cfg: Config) -> int:

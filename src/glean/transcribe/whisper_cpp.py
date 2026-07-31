@@ -21,7 +21,7 @@ from glean.transcribe.base import BackendUnavailable
 BINARY_CANDIDATES = ("whisper-cli", "whisper-cpp", "main")
 
 
-def _binary() -> str | None:
+def _binary(cfg=None) -> str | None:
     override = os.environ.get("GLEAN_WHISPER_BIN")
     if override:
         return override if (shutil.which(override) or os.path.exists(override)) else None
@@ -29,6 +29,22 @@ def _binary() -> str | None:
         found = shutil.which(candidate)
         if found:
             return found
+    build_bin = _built_binary(cfg)
+    if build_bin:
+        return build_bin
+    return None
+
+
+def _built_binary(cfg) -> str | None:
+    """Probe the well-known location `glean setup` builds whisper.cpp into."""
+    cache_dir = getattr(cfg, "cache_dir", None)
+    if cache_dir is None:
+        return None
+    build_bin = Path(cache_dir) / "whisper.cpp" / "build" / "bin"
+    for candidate in BINARY_CANDIDATES:
+        found = build_bin / candidate
+        if found.exists():
+            return str(found)
     return None
 
 
@@ -44,7 +60,7 @@ class WhisperCppBackend:
 
     def __init__(self, cfg=None) -> None:
         self.cfg = cfg
-        self.binary = _binary()
+        self.binary = _binary(cfg)
         self.model_path = self._resolve_model(cfg)
 
     def _resolve_model(self, cfg) -> Path | None:
@@ -68,7 +84,7 @@ class WhisperCppBackend:
                 "-oj", "-ojf", "-otxt", "-osrt", "-of", prefix,
                 "-l", language or "auto", "-t", str(threads),
             ]
-            proc = subprocess.run(cmd, capture_output=True, text=True)
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
             data = self._load_json(prefix + ".json", cmd, proc)
 
         return self._to_transcript(data, word_timestamps)

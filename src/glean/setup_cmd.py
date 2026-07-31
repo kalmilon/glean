@@ -21,7 +21,7 @@ from glean.config import Config
 FLUIDAUDIO_BIN = "fluidaudiocli"
 WHISPER_BIN_CANDIDATES = ("whisper-cli", "whisper-cpp", "main")
 WHISPER_REPO = "https://github.com/ggml-org/whisper.cpp"
-WHISPER_MODEL_URL = "https://huggingface.co/ggml-org/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin"
+WHISPER_MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin"
 FLUIDAUDIO_REPO = "https://github.com/FluidInference/FluidAudio"
 
 

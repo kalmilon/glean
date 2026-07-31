@@ -8,6 +8,7 @@ Pure-Python: the only heavy lifter is yt-dlp itself.
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 
 from glean.models import MediaItem
 
@@ -17,6 +18,13 @@ _URL_ID_PATTERNS = [
     re.compile(r"^(" + _VIDEO_ID + r")$"),
 ]
 _YOUTUBE_HOST = re.compile(r"(?://|\.|^)(?:www\.|m\.)?(youtube\.com|youtu\.be)\b", re.IGNORECASE)
+_YOUTUBE_HOSTS = ("youtube.com", "youtu.be")
+
+
+def _is_youtube_host(url: str) -> bool:
+    """True only when the URL's actual host is youtube.com/youtu.be or a subdomain of them."""
+    host = (urlparse(url if "://" in url else "//" + url).hostname or "").lower()
+    return host in _YOUTUBE_HOSTS or any(host.endswith("." + h) for h in _YOUTUBE_HOSTS)
 
 
 def _extract_video_id(url_or_id: str) -> str | None:
@@ -75,7 +83,7 @@ class YouTubeSource:
     def matches(self, url: str) -> bool:
         """True for youtube.com / youtu.be URLs and bare 11-char video IDs."""
         candidate = url.strip()
-        if _YOUTUBE_HOST.search(candidate):
+        if _is_youtube_host(candidate):
             return True
         if re.fullmatch(_VIDEO_ID, candidate):
             return True

@@ -51,7 +51,7 @@ def ffmpeg_to_wav(src: str, dst: str) -> None:
     try:
         subprocess.run(
             ["ffmpeg", "-y", "-loglevel", "error", "-i", str(src), "-vn", "-ac", "1", "-ar", "16000", str(dst)],
-            check=True, capture_output=True, text=True,
+            check=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError as e:
         raise RuntimeError("ffmpeg not found on PATH — install ffmpeg to acquire audio") from e
@@ -217,28 +217,33 @@ def _cobalt_download_to_wav(reel_url: str, wav: Path, cfg: Config, job: Path) ->
     """
     base = (cfg.cobalt_url or DEFAULT_COBALT_URL).rstrip("/")
     started_here = False
+    started_machine = False
     if not _cobalt_ready(base):
         if base != DEFAULT_COBALT_URL:
             raise RuntimeError(f"Cobalt is unavailable at {base}")
-        started_here = _start_local_cobalt(base)
+        started_here, started_machine = _start_local_cobalt(base)
 
     source = job / "ig-source"
     try:
-        media_url = _cobalt_resolve(base, reel_url, "audio")
-        _download_file(media_url, source)
         try:
-            ffmpeg_to_wav(str(source), str(wav))
-        except RuntimeError:
-            media_url = _cobalt_resolve(base, reel_url, "auto")
+            media_url = _cobalt_resolve(base, reel_url, "audio")
             _download_file(media_url, source)
-            ffmpeg_to_wav(str(source), str(wav))
-        if cfg.keep_audio:
-            shutil.move(str(source), str(job / "source"))
-        else:
-            source.unlink(missing_ok=True)
+            try:
+                ffmpeg_to_wav(str(source), str(wav))
+            except RuntimeError:
+                media_url = _cobalt_resolve(base, reel_url, "auto")
+                _download_file(media_url, source)
+                ffmpeg_to_wav(str(source), str(wav))
+            if cfg.keep_audio:
+                shutil.move(str(source), str(job / "source"))
+        finally:
+            if not cfg.keep_audio:
+                source.unlink(missing_ok=True)
     finally:
         if started_here:
             _stop_local_cobalt()
+        if started_machine:
+            subprocess.run(["podman", "machine", "stop"], capture_output=True)
 
 
 def _cobalt_resolve(base: str, reel_url: str, mode: str) -> str:
@@ -289,17 +294,21 @@ def _cobalt_ready(base: str) -> bool:
         return False
 
 
-def _start_local_cobalt(base: str) -> bool:
+def _start_local_cobalt(base: str) -> tuple[bool, bool]:
     """Bring up the local Cobalt container in Podman, waiting until it answers.
 
-    Returns True so the caller knows to stop it afterwards. Raises with an
-    actionable message if Podman is missing or Cobalt never becomes ready.
+    Returns (started_container, started_machine) so the caller knows what this
+    invocation must tear down afterwards. Raises with an actionable message if
+    Podman is missing or Cobalt never becomes ready — on the timeout path the
+    container (and machine) this invocation started are stopped before raising.
     """
     if not shutil.which("podman"):
         raise RuntimeError("podman is required to run local Cobalt for Instagram downloads")
 
+    started_machine = False
     if subprocess.run(["podman", "info"], capture_output=True).returncode != 0:
         subprocess.run(["podman", "machine", "start"], capture_output=True)
+        started_machine = True
 
     if subprocess.run(["podman", "container", "exists", COBALT_CONTAINER]).returncode == 0:
         if subprocess.run(["podman", "start", COBALT_CONTAINER], capture_output=True).returncode != 0:
@@ -311,8 +320,11 @@ def _start_local_cobalt(base: str) -> bool:
 
     for _ in range(30):
         if _cobalt_ready(base):
-            return True
+            return True, started_machine
         time.sleep(1)
+    _stop_local_cobalt()
+    if started_machine:
+        subprocess.run(["podman", "machine", "stop"], capture_output=True)
     raise RuntimeError(f"local Cobalt did not become ready; inspect with: podman logs {COBALT_CONTAINER}")
 
 

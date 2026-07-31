@@ -49,7 +49,7 @@ class ParakeetBackend:
                 cmd.append("--word-timestamps")
             if language:
                 cmd += ["--language", language]
-            subprocess.run(cmd, capture_output=True, text=True)
+            subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
             data = self._load_json(out_json, cmd)
         finally:
             try:
@@ -71,12 +71,13 @@ class ParakeetBackend:
             Word(text=w.get("word", ""), start=float(w.get("startTime", 0.0)), end=float(w.get("endTime", 0.0)))
             for w in data.get("wordTimings") or []
         ]
-        duration = data.get("durationSeconds")
+        ds = data.get("durationSeconds")
+        duration = float(ds) if ds else (words[-1].end if words else None)
         return Transcript(
             text=(data.get("text") or "").strip(),
             words=words,
             language=language,
             backend=self.name,
             model=str(data.get("modelVersion") or self.model),
-            duration=float(duration) if duration is not None else None,
+            duration=duration,
         )
