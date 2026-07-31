@@ -54,12 +54,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_yt.add_argument("--transcribe", action="store_true", help="transcribe every channel/search result (default: metadata only)")
     p_yt.add_argument("--captions", action="store_true", help="use YouTube's own captions instead of local transcription (YouTube only)")
 
-    p_ig = sub.add_parser("ig", parents=[common, runflags], help="Instagram: reel URL, `list`/`scout <@acct>`, `profile <@handle>`, `search <query>`")
-    p_ig.add_argument("target", nargs="+", metavar="TARGET", help="reel URL, or `list`/`scout <@acct>`, `profile <@handle>`, `search <query>`")
+    p_ig = sub.add_parser("ig", parents=[common, runflags], help="Instagram: reel URL, `list`/`scout`/`sounds <@acct>`, `profile <@handle>`, `search <query>`")
+    p_ig.add_argument("target", nargs="+", metavar="TARGET", help="reel URL, or `list`/`scout`/`sounds <@acct>`, `profile <@handle>`, `search <query>`")
     p_ig.add_argument("--limit", type=int, default=24, help="max results for `list`/`search` (default 24)")
     p_ig.add_argument("--top", type=int, default=30, help="max results for `scout` (default 30)")
     p_ig.add_argument("--since-days", type=int, default=90, dest="since_days", help="`scout` recency window in days (default 90)")
     p_ig.add_argument("--transcribe", action="store_true", help="transcribe every list/scout result (default: metadata only)")
+    p_ig.add_argument("--music-only", action="store_true", dest="music_only", help="`sounds`: only licensed tracks, which are the ones anyone can reuse")
 
     p_tw = sub.add_parser("twitch", parents=[common, runflags], help="Twitch VOD or clip → transcribe")
     p_tw.add_argument("target", help="a Twitch VOD or clip URL")
@@ -139,6 +140,13 @@ def _cmd_ig(args, parser: argparse.ArgumentParser, cfg: Config) -> int:
         from glean.sources import instagram
         items = instagram.scout(usernames, cfg, top=args.top, since_days=args.since_days)
         return _run_discovery(items, "ig-scout", {"accounts": usernames, "top": args.top, "since_days": args.since_days}, args, cfg)
+    if verb == "sounds":
+        accounts = tokens[1:]
+        if not accounts:
+            parser.error("ig sounds needs one or more <@account> arguments")
+        from glean.sources import instagram
+        found = instagram.sounds(accounts, cfg, top=args.top, limit=args.limit, since_days=args.since_days, music_only=args.music_only)
+        return _run_sounds(found, "ig-sounds", {"accounts": accounts, "top": args.top, "since_days": args.since_days, "music_only": args.music_only}, args, cfg)
     if verb == "profile":
         if len(tokens) < 2:
             parser.error("ig profile needs an <@handle>")
@@ -197,6 +205,41 @@ def _run_profiles(profiles, kind: str, params: dict, args, cfg: Config) -> int:
         path = write_run_manifest(run_dir, kind, params, profiles, note=getattr(args, "run_note", None), transcribed=False)
         print(f"run: {path}", file=sys.stderr)
     return 0
+
+
+def _run_sounds(found, kind: str, params: dict, args, cfg: Config) -> int:
+    """Emit Sounds and, with `--run-dir`, a manifest of them. Sounds are aggregates, never transcribed."""
+    found = list(found)
+    _emit_sounds(found, cfg)
+    run_dir = getattr(args, "run_dir", None)
+    if run_dir:
+        from glean.output import write_run_manifest
+        path = write_run_manifest(run_dir, kind, params, found, note=getattr(args, "run_note", None), transcribed=False)
+        print(f"run: {path}", file=sys.stderr)
+    return 0
+
+
+def _emit_sounds(found, cfg: Config) -> None:
+    """A JSON array under `--json`, else a ranked human table."""
+    found = list(found)
+    if cfg.json_output:
+        print(json.dumps([s.to_dict() for s in found]))
+        return
+    if not found:
+        print("no sounds found — the accounts' recent reels carry no audio metadata")
+        return
+    print(f"{len(found)} sound(s), most-used first")
+    for s in found:
+        name = s.title or "(untitled)"
+        by = f" — {s.artist}" if s.artist else ""
+        # "original" is worth flagging: it cannot be reused the way a licensed track can.
+        tag = "original" if s.kind == "original_sounds" else "music"
+        print(f"- {name}{by}  [{tag}]")
+        print(f"    {s.uses} reel(s) · {s.total_plays:,} plays · {', '.join(s.accounts)}")
+        if s.url:
+            print(f"    {s.url}")
+        for example in s.examples[:2]:
+            print(f"    e.g. {example}")
 
 
 def _emit_results(results, cfg: Config) -> None:

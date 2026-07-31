@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from glean.models import MediaItem, Profile
+from glean.models import MediaItem, Profile, Sound
 
 INSTAGRAM_APP_ID = "936619743392459"
 INSTAGRAM_USER_AGENT = (
@@ -276,6 +276,96 @@ def scout(usernames: list[str], cfg, top: int = 30, since_days: int = 90) -> lis
 
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return [media for _, media in scored[:top]]
+
+
+# --- Sounds: which audio a set of accounts is actually building on ---
+
+
+def _sound_of(item: dict) -> tuple[str, str, str | None, str | None] | None:
+    """Identify the audio behind one reel as (id, kind, title, artist), or None if it has none.
+
+    The two kinds live in different sub-objects and are keyed differently. Licensed music is keyed
+    by audio_cluster_id, which is what Instagram's own /reels/audio/ page takes and what makes two
+    accounts using the same track group together. An original sound has no cluster, so it is keyed
+    by its asset id and is by nature used mostly by one account.
+    """
+    cm = item.get("clips_metadata") or {}
+    kind = cm.get("audio_type") or ""
+
+    asset = (cm.get("music_info") or {}).get("music_asset_info") or {}
+    if asset:
+        sid = asset.get("audio_cluster_id") or asset.get("id")
+        if sid:
+            return str(sid), kind or "licensed_music", asset.get("title"), asset.get("display_artist")
+
+    original = cm.get("original_sound_info") or {}
+    if original:
+        sid = original.get("audio_asset_id")
+        if sid:
+            artist = (original.get("ig_artist") or {}).get("username")
+            return str(sid), kind or "original_sounds", original.get("original_audio_title"), artist
+
+    return None
+
+
+def sounds(usernames: list[str], cfg, top: int = 30, limit: int = 24, since_days: int = 90, music_only: bool = False) -> list[Sound]:
+    """Rank the audio a set of accounts is building on, most-used first.
+
+    This is a survey of what the accounts you name are using, not a global chart — Instagram
+    publishes no trending-sounds endpoint that answers without a login. Sampling accounts you
+    already care about answers the more useful question anyway: what is working in this niche.
+
+    Ranked by how many of the sampled reels use a sound, then by total plays, so a track three
+    accounts reached for outranks one reel that happened to go far on its own audio.
+    """
+    now = int(time.time())
+    cutoff = now - since_days * 86400
+    found: dict[str, dict] = {}
+
+    for raw in usernames:
+        name = _normalize_username(raw)
+        for reel in _fetch_reels(name, limit, cfg):
+            if (reel.get("taken_at") or 0) < cutoff:
+                continue
+            ident = _sound_of(reel)
+            if ident is None:
+                continue
+            sid, kind, title, artist = ident
+            # An original sound belongs to whoever posted it; it can be remixed but it is not the
+            # interchangeable thing "what sound should I use" is asking about. --music-only drops it.
+            if music_only and kind != "licensed_music":
+                continue
+            plays = reel.get("play_count") or reel.get("view_count") or 0
+            entry = found.setdefault(sid, {
+                "kind": kind, "title": title, "artist": artist,
+                "plays": [], "accounts": [], "examples": [],
+            })
+            entry["plays"].append(plays)
+            if name not in entry["accounts"]:
+                entry["accounts"].append(name)
+            if reel.get("code") and len(entry["examples"]) < 3:
+                entry["examples"].append(f"https://www.instagram.com/reel/{reel['code']}/")
+
+    out = [
+        Sound(
+            source="instagram",
+            id=sid,
+            kind=e["kind"],
+            title=e["title"],
+            artist=e["artist"],
+            uses=len(e["plays"]),
+            total_plays=sum(e["plays"]),
+            median_plays=_median([float(p) for p in e["plays"]]),
+            accounts=e["accounts"],
+            examples=e["examples"],
+            # Only a licensed track has a browsable page; an original sound's asset id is not a
+            # cluster id and this URL 404s for it, so it is left empty rather than made up.
+            url=f"https://www.instagram.com/reels/audio/{sid}/" if e["kind"] == "licensed_music" else "",
+        )
+        for sid, e in found.items()
+    ]
+    out.sort(key=lambda s: (s.uses, s.total_plays), reverse=True)
+    return out[:top]
 
 
 # --- Profiles: lookup (cookieless) and search (needs a session cookie) ---

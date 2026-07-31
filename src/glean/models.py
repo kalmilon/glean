@@ -75,6 +75,38 @@ class Profile:
 
 
 @dataclass
+class Sound:
+    """An audio track reels are built on, aggregated over every reel seen using it.
+
+    Instagram splits these in two and names them differently: licensed music carries a title and a
+    display artist, while an original sound is titled after whoever posted it first. `kind` keeps
+    that distinction rather than flattening it — a trending licensed track and a creator's own audio
+    are not the same thing to go and reuse.
+
+    `uses` and the play figures count only the reels this run actually saw, never a platform total.
+    An account sampled 24 reels deep cannot say how many reels exist worldwide on a sound, so these
+    numbers rank a set against itself and mean nothing outside it.
+    """
+    source: str                    # "instagram" | ...
+    id: str                        # audio_cluster_id (licensed) or audio_asset_id (original)
+    kind: str                      # "licensed_music" | "original_sounds"
+    title: str | None = None
+    artist: str | None = None
+    uses: int = 0                  # reels seen using it
+    total_plays: int = 0           # summed over those reels
+    median_plays: float | None = None
+    accounts: list[str] = field(default_factory=list)
+    examples: list[str] = field(default_factory=list)  # reel URLs
+    url: str = ""                  # the platform's page for this sound
+    extra: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["_v"] = RECORD_VERSION
+        return d
+
+
+@dataclass
 class Result:
     item: MediaItem
     transcript: Transcript | None

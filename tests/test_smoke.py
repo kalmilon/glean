@@ -210,3 +210,57 @@ def test_run_flags_accepted_on_every_transcribing_command():
 
     # `url` delegates to the YouTube path, so it must accept YouTube's own flag too.
     assert parser.parse_args(["url", "https://youtu.be/x", "--captions"]).captions is True
+
+
+def _reel(code, plays, *, cluster=None, title=None, artist=None, asset=None, orig_title=None, orig_artist=None):
+    """A minimal feed item shaped like the two audio layouts Instagram actually returns."""
+    cm = {"audio_type": "licensed_music" if cluster else ("original_sounds" if asset else "")}
+    if cluster:
+        cm["music_info"] = {"music_asset_info": {"audio_cluster_id": cluster, "title": title, "display_artist": artist}}
+    if asset:
+        cm["original_sound_info"] = {"audio_asset_id": asset, "original_audio_title": orig_title, "ig_artist": {"username": orig_artist}}
+    return {"code": code, "play_count": plays, "taken_at": 9_999_999_999, "clips_metadata": cm}
+
+
+def test_sound_of_reads_both_audio_layouts():
+    from glean.sources.instagram import _sound_of
+
+    assert _sound_of(_reel("a", 1, cluster="c1", title="Track", artist="Band")) == ("c1", "licensed_music", "Track", "Band")
+    assert _sound_of(_reel("b", 1, asset="a1", orig_title="Original audio", orig_artist="someone")) == ("a1", "original_sounds", "Original audio", "someone")
+    assert _sound_of({"code": "c", "clips_metadata": {}}) is None
+
+
+def test_sounds_group_by_track_and_rank_by_reuse(monkeypatch):
+    """Reuse must outrank raw reach: a track two accounts reached for beats one bigger lone reel."""
+    from glean.sources import instagram
+
+    feeds = {
+        "one": [_reel("r1", 100, cluster="c1", title="Shared", artist="Band"),
+                _reel("r2", 900, asset="a1", orig_title="Original audio", orig_artist="one")],
+        "two": [_reel("r3", 200, cluster="c1", title="Shared", artist="Band")],
+    }
+    monkeypatch.setattr(instagram, "_fetch_reels", lambda name, limit, cfg=None: feeds[name])
+
+    found = instagram.sounds(["@one", "@two"], cfg=None)
+    assert [s.id for s in found] == ["c1", "a1"], "two uses must outrank a single louder reel"
+
+    shared = found[0]
+    assert shared.uses == 2 and shared.total_plays == 300
+    assert shared.accounts == ["one", "two"]
+    assert shared.url == "https://www.instagram.com/reels/audio/c1/"
+    assert len(shared.examples) == 2
+
+    # An original sound has no cluster, so it has no browsable page — better empty than a 404.
+    assert found[1].url == ""
+    assert found[1].to_dict()["_v"] == RECORD_VERSION
+
+
+def test_sounds_music_only_drops_original_audio(monkeypatch):
+    from glean.sources import instagram
+
+    feed = [_reel("r1", 100, cluster="c1", title="Track", artist="Band"),
+            _reel("r2", 900, asset="a1", orig_title="Original audio", orig_artist="one")]
+    monkeypatch.setattr(instagram, "_fetch_reels", lambda name, limit, cfg=None: feed)
+
+    assert [s.id for s in instagram.sounds(["@one"], cfg=None, music_only=True)] == ["c1"]
+    assert len(instagram.sounds(["@one"], cfg=None)) == 2
