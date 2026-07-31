@@ -24,7 +24,7 @@ from pathlib import Path
 
 import requests
 
-from glean.config import Config
+from glean.config import Config, ytdlp_cookie_opts
 from glean.models import MediaItem
 from glean.sources import detect_source
 
@@ -82,6 +82,7 @@ def _acquire_ytdlp(url: str, cfg: Config, source: str) -> tuple[MediaItem, str]:
         "no_warnings": True,
         "noprogress": True,
         "restrictfilenames": True,
+        **ytdlp_cookie_opts(cfg),
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:

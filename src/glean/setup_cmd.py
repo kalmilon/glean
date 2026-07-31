@@ -86,6 +86,16 @@ def run_doctor(cfg: Config, env=os.environ) -> int:
     report.append(f"Transcription: {verdict}")
     report.append("")
 
+    report.append("Cookies (optional — for anti-bot / private search)")
+    if cfg.yt_cookies:
+        report.append(f"  [ok] youtube/twitch/x   cookies file: {cfg.yt_cookies}")
+    elif cfg.yt_cookies_from_browser:
+        report.append(f"  [ok] youtube/twitch/x   from browser: {cfg.yt_cookies_from_browser}")
+    else:
+        report.append("  [  ] youtube/twitch/x   none (set GLEAN_YT_COOKIES or GLEAN_YT_COOKIES_FROM_BROWSER if YouTube blocks you)")
+    report.append(f"  [{'ok' if cfg.ig_cookie else '  '}] instagram search    {'sessionid set' if cfg.ig_cookie else 'none (GLEAN_IG_SESSIONID enables ig search)'}")
+    report.append("")
+
     report.append("Paths")
     report.append(f"  out_dir    {cfg.out_dir}")
     report.append(f"  cache_dir  {cfg.cache_dir}")

@@ -136,3 +136,11 @@ def test_captions_on_non_youtube_raises(monkeypatch, tmp_path):
     monkeypatch.setattr(acquire, "download_audio", _no_network)
     with pytest.raises(RuntimeError):
         pipeline.transcribe_url("https://x.com/jack/status/20", Config.resolve(), captions=True)
+
+
+def test_ytdlp_cookie_opts():
+    from glean.config import Config, ytdlp_cookie_opts
+    assert ytdlp_cookie_opts(Config.resolve(env={"GLEAN_YT_COOKIES_FROM_BROWSER": "chrome"})) == {"cookiesfrombrowser": ("chrome",)}
+    assert ytdlp_cookie_opts(Config.resolve(env={"GLEAN_YT_COOKIES": "/tmp/c.txt"})) == {"cookiefile": "/tmp/c.txt"}
+    assert ytdlp_cookie_opts(Config.resolve(env={})) == {}
+    assert ytdlp_cookie_opts(None) == {}

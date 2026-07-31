@@ -83,6 +83,22 @@ glean yt https://youtu.be/VIDEO --captions                 # one video, via its 
 glean yt channel @handle --transcribe --captions           # caption the whole feed
 ```
 
+## YouTube (and Twitch/X) cookies — for anti-bot blocks
+
+YouTube sometimes challenges datacenter/repeated IPs with "Sign in to confirm you're not a
+bot", which stops yt-dlp (audio download **and** `--captions`). Hand glean a logged-in cookie
+jar and it sails through:
+
+```bash
+export GLEAN_YT_COOKIES_FROM_BROWSER=safari      # read live from a browser (chrome/safari/firefox/…)
+# or:
+export GLEAN_YT_COOKIES=~/yt-cookies.txt         # a Netscape cookies.txt export
+glean yt <url>
+```
+
+(or `yt_cookies` / `yt_cookies_from_browser` in `~/.config/glean/config.toml`). Applies to
+every yt-dlp path: single video, `channel`, `search`, and `--captions`.
+
 ## Instagram search & cookies
 
 `ig profile <@handle>` works anonymously. Free-text `ig search <query>` does **not** —

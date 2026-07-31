@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
+from glean.config import ytdlp_cookie_opts
 from glean.models import MediaItem, Transcript, Word
 
 _VIDEO_ID = r"[A-Za-z0-9_-]{11}"
@@ -95,7 +96,7 @@ class YouTubeSource:
 
         video_id = _extract_video_id(url)
         target = _watch_url(video_id) if video_id else url
-        ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+        ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True, **ytdlp_cookie_opts(cfg)}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(target, download=False)
         item = _entry_to_item(info)
@@ -104,11 +105,11 @@ class YouTubeSource:
         return item
 
 
-def _flat_entries(target: str, limit: int) -> list[dict]:
+def _flat_entries(target: str, limit: int, cfg=None) -> list[dict]:
     """Run yt-dlp flat extraction against a target and return its entries."""
     import yt_dlp
 
-    ydl_opts = {"quiet": True, "no_warnings": True, "extract_flat": True}
+    ydl_opts = {"quiet": True, "no_warnings": True, "extract_flat": True, **ytdlp_cookie_opts(cfg)}
     if limit:
         ydl_opts["playlistend"] = limit
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -142,13 +143,13 @@ def channel(handle: str, cfg, limit: int = 30) -> list[MediaItem]:
     else:
         normalised = handle if handle.startswith("@") else "@" + handle.lstrip("@")
         target = f"https://www.youtube.com/{normalised}/videos"
-    return _collect(_flat_entries(target, limit), limit)
+    return _collect(_flat_entries(target, limit, cfg), limit)
 
 
 def search(query: str, cfg, limit: int = 30) -> list[MediaItem]:
     """Search YouTube via yt-dlp's `ytsearchN:` provider and return metadata items."""
     n = limit or 30
-    return _collect(_flat_entries(f"ytsearch{n}:{query}", n), n)
+    return _collect(_flat_entries(f"ytsearch{n}:{query}", n, cfg), n)
 
 
 def _pick_caption_track(tracks: dict, want: str) -> tuple[str | None, list | None]:
@@ -204,7 +205,7 @@ def captions(url: str, cfg, language: str | None = None) -> Transcript:
 
     video_id = _extract_video_id(url)
     target = _watch_url(video_id) if video_id else url
-    ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True, **ytdlp_cookie_opts(cfg)}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(target, download=False)
 

@@ -43,6 +43,13 @@ uv run glean url <any-url> --out ~/research --json
   transcription. Single video → `pipeline.transcribe_url(url, cfg, captions=True)`; with
   `--transcribe` on channel/search → the whole batch uses captions. Errors clearly on non-YouTube.
 
+## Cookies (optional)
+- `GLEAN_YT_COOKIES=<cookies.txt>` or `GLEAN_YT_COOKIES_FROM_BROWSER=<chrome|safari|firefox>` —
+  passed to every yt-dlp call (download, channel, search, captions) via `config.ytdlp_cookie_opts`.
+  Fixes YouTube's "confirm you're not a bot" blocks.
+- `GLEAN_IG_SESSIONID=<sessionid>` — enables `ig search` and lifts `ig list`/`scout` rate limits.
+- Both also settable in `~/.config/glean/config.toml` (`yt_cookies` / `yt_cookies_from_browser` / `ig_sessionid`).
+
 ## Adding a source
 Implement the `Source` protocol in `sources/<name>.py`, register it in `sources/__init__.py`,
 add a subparser in `cli.py`. If the platform is yt-dlp-supported, reuse the yt-dlp acquire path.

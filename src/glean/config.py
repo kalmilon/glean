@@ -43,7 +43,9 @@ class Config:
     cobalt_url: str | None = None
     parakeet_model: str = DEFAULT_PARAKEET_MODEL
     whisper_model: Path | None = None
-    ig_cookie: str | None = None    # Instagram sessionid, for authenticated search
+    ig_cookie: str | None = None            # Instagram sessionid, for authenticated search
+    yt_cookies: Path | None = None          # cookies.txt for yt-dlp (YouTube/Twitch/X anti-bot)
+    yt_cookies_from_browser: str | None = None  # e.g. "chrome"/"safari"/"firefox" — yt-dlp reads live
 
     @classmethod
     def resolve(cls, args=None, env=None) -> "Config":
@@ -64,6 +66,9 @@ class Config:
         whisper_model_env = env.get("GLEAN_WHISPER_MODEL") or conf.get("whisper_model")
         whisper_model = Path(whisper_model_env).expanduser() if whisper_model_env else None
 
+        yt_cookies_env = env.get("GLEAN_YT_COOKIES") or conf.get("yt_cookies")
+        yt_cookies = Path(yt_cookies_env).expanduser() if yt_cookies_env else None
+
         return cls(
             out_dir=out_dir,
             cache_dir=cache_dir,
@@ -75,6 +80,8 @@ class Config:
             parakeet_model=env.get("GLEAN_PARAKEET_MODEL") or conf.get("parakeet_model") or DEFAULT_PARAKEET_MODEL,
             whisper_model=whisper_model,
             ig_cookie=env.get("GLEAN_IG_SESSIONID") or conf.get("ig_sessionid"),
+            yt_cookies=yt_cookies,
+            yt_cookies_from_browser=env.get("GLEAN_YT_COOKIES_FROM_BROWSER") or conf.get("yt_cookies_from_browser"),
         )
 
     def default_whisper_model(self) -> Path:
@@ -90,3 +97,17 @@ class Config:
 
 def _safe(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in name) or "item"
+
+
+def ytdlp_cookie_opts(cfg) -> dict:
+    """yt-dlp cookie options from config — a cookies.txt file or a live browser jar.
+
+    Lets the YouTube/Twitch/X path survive anti-bot challenges. Empty when unset.
+    """
+    if cfg is None:
+        return {}
+    if getattr(cfg, "yt_cookies", None):
+        return {"cookiefile": str(cfg.yt_cookies)}
+    if getattr(cfg, "yt_cookies_from_browser", None):
+        return {"cookiesfrombrowser": (cfg.yt_cookies_from_browser,)}
+    return {}
