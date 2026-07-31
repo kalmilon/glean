@@ -43,6 +43,7 @@ class Config:
     cobalt_url: str | None = None
     parakeet_model: str = DEFAULT_PARAKEET_MODEL
     whisper_model: Path | None = None
+    ig_cookie: str | None = None    # Instagram sessionid, for authenticated search
 
     @classmethod
     def resolve(cls, args=None, env=None) -> "Config":
@@ -73,6 +74,7 @@ class Config:
             cobalt_url=env.get("GLEAN_COBALT_URL") or conf.get("cobalt_url"),
             parakeet_model=env.get("GLEAN_PARAKEET_MODEL") or conf.get("parakeet_model") or DEFAULT_PARAKEET_MODEL,
             whisper_model=whisper_model,
+            ig_cookie=env.get("GLEAN_IG_SESSIONID") or conf.get("ig_sessionid"),
         )
 
     def default_whisper_model(self) -> Path:

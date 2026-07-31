@@ -25,6 +25,8 @@ glean yt   search "topic" --limit 20
 glean ig   https://instagram.com/reel/XXXX/       # one reel → transcript
 glean ig   list  @account --limit 24              # recent reels + metadata
 glean ig   scout @a @b --top 30 --since-days 90   # rank an account's reels
+glean ig   profile @account                       # full profile (followers, bio, verified) — cookieless
+glean ig   search "query" --limit 20              # find accounts — needs a session cookie (see below)
 glean twitch https://twitch.tv/videos/123         # VOD / clip
 glean x      https://x.com/user/status/123        # tweet video
 glean url    <any-url>                             # auto-detect the platform
@@ -44,6 +46,19 @@ Output directory precedence — pick whichever fits your workflow:
 Add `--json` to print machine-readable results to stdout (for agents/pipelines),
 `--backend {parakeet,whisper.cpp}` to force an engine, `--language CODE` to hint,
 `--keep-audio` to retain the downloaded media.
+
+## Instagram search & cookies
+
+`ig profile <@handle>` works anonymously. Free-text `ig search <query>` does **not** —
+Instagram blocks anonymous search, so it needs a logged-in session:
+
+```bash
+export GLEAN_IG_SESSIONID="<the 'sessionid' cookie from your instagram.com session>"
+glean ig search "climbing coach"
+```
+
+(or `ig_sessionid = "..."` in `~/.config/glean/config.toml`). A cookie also raises the
+rate limits on `list`/`scout`.
 
 ## How it works
 

@@ -52,6 +52,29 @@ class MediaItem:
 
 
 @dataclass
+class Profile:
+    """A social account — the unit returned by profile lookup and account search."""
+    source: str                    # "instagram" | ...
+    username: str
+    id: str | None = None
+    full_name: str | None = None
+    followers: int | None = None
+    following: int | None = None
+    posts: int | None = None
+    verified: bool = False
+    private: bool = False
+    bio: str | None = None
+    external_url: str | None = None
+    url: str = ""
+    extra: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["_v"] = RECORD_VERSION
+        return d
+
+
+@dataclass
 class Result:
     item: MediaItem
     transcript: Transcript | None

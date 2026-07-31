@@ -20,13 +20,14 @@ Reel performed. Formula (ported verbatim from the `ig` tool):
 from __future__ import annotations
 
 import math
+import os
 import re
 import time
 from datetime import datetime, timezone
 
 import requests
 
-from glean.models import MediaItem
+from glean.models import MediaItem, Profile
 
 INSTAGRAM_APP_ID = "936619743392459"
 INSTAGRAM_USER_AGENT = (
@@ -46,20 +47,30 @@ _CONNECT_TIMEOUT = 10
 _READ_TIMEOUT = 30
 
 
-def _headers() -> dict:
-    return {
+def _cookie(cfg) -> str | None:
+    """The Instagram sessionid, if the caller supplied one (cfg or $GLEAN_IG_SESSIONID)."""
+    value = getattr(cfg, "ig_cookie", None) if cfg is not None else None
+    return value or os.environ.get("GLEAN_IG_SESSIONID") or None
+
+
+def _headers(cfg=None) -> dict:
+    headers = {
         "x-ig-app-id": INSTAGRAM_APP_ID,
         "user-agent": INSTAGRAM_USER_AGENT,
         "accept": "*/*",
     }
+    sessionid = _cookie(cfg)
+    if sessionid:
+        headers["cookie"] = f"sessionid={sessionid}"
+    return headers
 
 
-def _get_json(url: str) -> dict:
+def _get_json(url: str, cfg=None) -> dict:
     """GET a public Instagram JSON endpoint with exponential backoff."""
     last_error: Exception | None = None
     for attempt in range(1, _RETRIES + 1):
         try:
-            resp = requests.get(url, headers=_headers(), timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
+            resp = requests.get(url, headers=_headers(cfg), timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
             resp.raise_for_status()
             return resp.json()
         except (requests.RequestException, ValueError) as exc:
@@ -149,7 +160,7 @@ class InstagramSource:
         if not code:
             raise ValueError(f"not an Instagram Reel/post URL: {url!r}")
         info_url = f"https://www.instagram.com/api/v1/media/{_media_id(code)}/info/"
-        data = _get_json(info_url)
+        data = _get_json(info_url, cfg)
         items = data.get("items") or []
         if not items:
             raise RuntimeError(f"Instagram returned no media for {url!r}")
@@ -160,7 +171,7 @@ class InstagramSource:
         return item
 
 
-def _fetch_reels(username: str, limit: int) -> list[dict]:
+def _fetch_reels(username: str, limit: int, cfg=None) -> list[dict]:
     """Page the public user feed, keeping only Reels (product_type == 'clips')."""
     reels: dict[str, dict] = {}
     max_id: str | None = None
@@ -172,7 +183,7 @@ def _fetch_reels(username: str, limit: int) -> list[dict]:
         feed_url = f"https://www.instagram.com/api/v1/feed/user/{username}/username/?count=12"
         if max_id:
             feed_url += f"&max_id={max_id}"
-        data = _get_json(feed_url)
+        data = _get_json(feed_url, cfg)
         for item in data.get("items") or []:
             if item.get("product_type") != "clips":
                 continue
@@ -191,7 +202,7 @@ def _fetch_reels(username: str, limit: int) -> list[dict]:
 def list_account(username: str, cfg, limit: int = 24) -> list[MediaItem]:
     """Return an account's most recent public Reels as MediaItems, newest first."""
     name = _normalize_username(username)
-    return [_item_from_media(item, name) for item in _fetch_reels(name, limit)]
+    return [_item_from_media(item, name) for item in _fetch_reels(name, limit, cfg)]
 
 
 def _median(values: list[float]) -> float | None:
@@ -253,7 +264,7 @@ def scout(usernames: list[str], cfg, top: int = 30, since_days: int = 90) -> lis
     scored: list[tuple[float, MediaItem]] = []
     for raw in usernames:
         name = _normalize_username(raw)
-        reels = _fetch_reels(name, limit)
+        reels = _fetch_reels(name, limit, cfg)
         account_median = _median([r.get("play_count") or r.get("view_count") for r in reels])
         for reel in reels:
             evidence = _score_reel(reel, account_median, now, cutoff)
@@ -265,3 +276,74 @@ def scout(usernames: list[str], cfg, top: int = 30, since_days: int = 90) -> lis
 
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return [media for _, media in scored[:top]]
+
+
+# --- Profiles: lookup (cookieless) and search (needs a session cookie) ---
+
+def _profile_from_web_info(user: dict) -> Profile:
+    """Map the web_profile_info user blob to a Profile."""
+    handle = user.get("username", "")
+    return Profile(
+        source="instagram",
+        username=handle,
+        id=str(user.get("id")) if user.get("id") is not None else None,
+        full_name=user.get("full_name") or None,
+        followers=(user.get("edge_followed_by") or {}).get("count"),
+        following=(user.get("edge_follow") or {}).get("count"),
+        posts=(user.get("edge_owner_to_timeline_media") or {}).get("count"),
+        verified=bool(user.get("is_verified")),
+        private=bool(user.get("is_private")),
+        bio=user.get("biography") or None,
+        external_url=user.get("external_url") or None,
+        url=f"https://www.instagram.com/{handle}/" if handle else "",
+        extra={"category": user.get("category_name") or user.get("category")},
+    )
+
+
+def _profile_from_search_user(user: dict) -> Profile:
+    """Map a topsearch/users-search result user to a Profile (fewer fields available)."""
+    handle = user.get("username", "")
+    return Profile(
+        source="instagram",
+        username=handle,
+        id=str(user.get("pk") or user.get("id") or "") or None,
+        full_name=user.get("full_name") or None,
+        followers=user.get("follower_count"),
+        verified=bool(user.get("is_verified")),
+        private=bool(user.get("is_private")),
+        url=f"https://www.instagram.com/{handle}/" if handle else "",
+        extra={k: user.get(k) for k in ("mutual_followers_count",) if user.get(k) is not None},
+    )
+
+
+def profile(username: str, cfg=None) -> Profile:
+    """Fetch one account's public profile by exact handle. Works without a cookie."""
+    name = _normalize_username(username)
+    url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={name}"
+    data = _get_json(url, cfg)
+    user = (data.get("data") or {}).get("user")
+    if not user:
+        raise RuntimeError(f"Instagram returned no profile for @{name}")
+    return _profile_from_web_info(user)
+
+
+def search(query: str, cfg=None, limit: int = 20) -> list[Profile]:
+    """Search Instagram for accounts matching a free-text query.
+
+    Instagram blocks anonymous search, so this needs a logged-in `sessionid`
+    (set $GLEAN_IG_SESSIONID or `ig_sessionid` in config). For a known handle,
+    use `profile()` instead, which works without a cookie.
+    """
+    if not _cookie(cfg):
+        raise RuntimeError(
+            "Instagram profile search requires a session cookie — anonymous search "
+            "is blocked by Instagram. Copy the `sessionid` cookie from your logged-in "
+            "instagram.com and set GLEAN_IG_SESSIONID (or ig_sessionid in config). "
+            "To look up a known handle without a cookie, use `glean ig profile <@handle>`."
+        )
+    q = requests.utils.quote(query.strip())
+    url = f"https://www.instagram.com/web/search/topsearch/?context=blended&query={q}&count={limit}"
+    data = _get_json(url, cfg)
+    users = [entry.get("user") or {} for entry in (data.get("users") or [])]
+    profiles = [_profile_from_search_user(u) for u in users if u.get("username")]
+    return profiles[:limit]

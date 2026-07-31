@@ -40,9 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_yt.add_argument("target", nargs="+", metavar="TARGET", help="video URL/ID, or `channel <@handle>` / `search <query>`")
     p_yt.add_argument("--limit", type=int, default=30, help="max items for channel/search (default 30)")
 
-    p_ig = sub.add_parser("ig", parents=[common], help="Instagram: a reel URL, or `list <@account>` / `scout <@a> <@b>...`")
-    p_ig.add_argument("target", nargs="+", metavar="TARGET", help="reel URL, or `list <@account>` / `scout <@a> <@b>...`")
-    p_ig.add_argument("--limit", type=int, default=24, help="max reels for `list` (default 24)")
+    p_ig = sub.add_parser("ig", parents=[common], help="Instagram: reel URL, `list`/`scout <@acct>`, `profile <@handle>`, `search <query>`")
+    p_ig.add_argument("target", nargs="+", metavar="TARGET", help="reel URL, or `list`/`scout <@acct>`, `profile <@handle>`, `search <query>`")
+    p_ig.add_argument("--limit", type=int, default=24, help="max results for `list`/`search` (default 24)")
     p_ig.add_argument("--top", type=int, default=30, help="max results for `scout` (default 30)")
     p_ig.add_argument("--since-days", type=int, default=90, dest="since_days", help="`scout` recency window in days (default 90)")
 
@@ -105,6 +105,19 @@ def _cmd_ig(args, parser: argparse.ArgumentParser, cfg: Config) -> int:
         from glean.sources import instagram
         _emit_items(instagram.scout(usernames, cfg, top=args.top, since_days=args.since_days), cfg)
         return 0
+    if verb == "profile":
+        if len(tokens) < 2:
+            parser.error("ig profile needs an <@handle>")
+        from glean.sources import instagram
+        _emit_profiles([instagram.profile(tokens[1], cfg)], cfg)
+        return 0
+    if verb == "search":
+        query = " ".join(tokens[1:]).strip()
+        if not query:
+            parser.error("ig search needs a <query>")
+        from glean.sources import instagram
+        _emit_profiles(instagram.search(query, cfg, limit=args.limit), cfg)
+        return 0
     return _transcribe_one(tokens[0], cfg)
 
 
@@ -136,6 +149,23 @@ def _emit_result(result, cfg: Config) -> None:
         preview = preview[:PREVIEW_CHARS].rstrip() + "…"
     for ln in preview.splitlines():
         print(f"  {ln}")
+
+
+def _emit_profiles(profiles, cfg: Config) -> None:
+    profiles = list(profiles)
+    if cfg.json_output:
+        print(json.dumps([p.to_dict() for p in profiles]))
+        return
+    print(f"{len(profiles)} profile(s)")
+    for p in profiles:
+        badge = " ✓" if p.verified else ""
+        followers = f"{p.followers:,}" if isinstance(p.followers, int) else "?"
+        print(f"- @{p.username}{badge}  ({followers} followers)")
+        if p.full_name:
+            print(f"    {p.full_name}")
+        if p.bio:
+            print(f"    {p.bio.splitlines()[0][:100]}")
+        print(f"    {p.url}")
 
 
 def _emit_items(items, cfg: Config) -> None:
@@ -178,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     except BackendUnavailable as exc:
         print(f"glean: {exc}", file=sys.stderr)
         return 1
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         print(f"glean: {exc}", file=sys.stderr)
         return 1
 

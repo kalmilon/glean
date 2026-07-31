@@ -81,3 +81,18 @@ def test_doctor_runs_and_exits_zero(monkeypatch, tmp_path):
     monkeypatch.setenv("GLEAN_OUT", str(tmp_path / "out"))
     monkeypatch.setenv("GLEAN_CACHE", str(tmp_path / "cache"))
     assert run_doctor(Config.resolve()) == 0
+
+
+def test_profile_record_versioned():
+    from glean.models import Profile, RECORD_VERSION
+    p = Profile(source="instagram", username="x", followers=10)
+    assert p.to_dict()["_v"] == RECORD_VERSION
+    assert p.to_dict()["username"] == "x"
+
+
+def test_ig_search_requires_cookie(monkeypatch):
+    import pytest
+    monkeypatch.delenv("GLEAN_IG_SESSIONID", raising=False)
+    from glean.sources import instagram
+    with pytest.raises(RuntimeError, match="session cookie"):
+        instagram.search("anything", cfg=None)
