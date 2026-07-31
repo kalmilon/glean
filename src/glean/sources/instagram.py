@@ -331,15 +331,17 @@ def search(query: str, cfg=None, limit: int = 20) -> list[Profile]:
     """Search Instagram for accounts matching a free-text query.
 
     Instagram blocks anonymous search, so this needs a logged-in `sessionid`
-    (set $GLEAN_IG_SESSIONID or `ig_sessionid` in config). For a known handle,
-    use `profile()` instead, which works without a cookie.
+    (set $GLEAN_IG_SESSIONID or `ig_sessionid` in config). `profile()` is not a
+    cookie-free alternative — it reads the same gated endpoint — but `list()`
+    is, so a known handle's reels can still be reached without one.
     """
     if not _cookie(cfg):
         raise RuntimeError(
             "Instagram profile search requires a session cookie — anonymous search "
             "is blocked by Instagram. Copy the `sessionid` cookie from your logged-in "
             "instagram.com and set GLEAN_IG_SESSIONID (or ig_sessionid in config). "
-            "To look up a known handle without a cookie, use `glean ig profile <@handle>`."
+            "`glean ig profile` needs the same cookie; to reach a known handle's reels "
+            "without one, use `glean ig list <@handle>`."
         )
     q = requests.utils.quote(query.strip())
     url = f"https://www.instagram.com/web/search/topsearch/?context=blended&query={q}&count={limit}"

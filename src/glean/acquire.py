@@ -304,7 +304,15 @@ def _start_local_cobalt(base: str) -> tuple[bool, bool]:
     container (and machine) this invocation started are stopped before raising.
     """
     if not shutil.which("podman"):
-        raise RuntimeError("podman is required to run local Cobalt for Instagram downloads")
+        # Pointing at an already-running Cobalt is the other way out of this, and on a machine
+        # without podman it is usually the only one — a container sharing its host's network
+        # namespace reaches the host's Cobalt at this very address. Naming only podman sends
+        # people off to install a container runtime when nothing here needs to run a container.
+        raise RuntimeError(
+            f"Instagram downloads need Cobalt, and nothing is listening at {base}. "
+            "Either install podman so one can be started here, or run Cobalt elsewhere "
+            "and set GLEAN_COBALT_URL (or cobalt_url in config) to its address."
+        )
 
     started_machine = False
     if subprocess.run(["podman", "info"], capture_output=True).returncode != 0:
