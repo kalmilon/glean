@@ -33,6 +33,16 @@ uv run glean ig <reel-url>
 uv run glean url <any-url> --out ~/research --json
 ```
 
+## Discovery flags (channel/search/list/scout)
+- `--transcribe` — run every discovered item through `batch.transcribe_items` and emit Results
+  instead of bare metadata. Per-item failures are logged to stderr and skipped, never fatal.
+- `--run-dir DIR [--run-note TEXT]` — set `cfg.out_dir = DIR` so per-item job dirs collect under
+  it, then write `DIR/run.json` via `output.write_run_manifest(kind, params, records, note,
+  transcribed)`. The manifest carries `_v` and a per-record summary; readers dispatch on `_v`.
+- `yt --captions` (YouTube only) — use YouTube's own caption track instead of local
+  transcription. Single video → `pipeline.transcribe_url(url, cfg, captions=True)`; with
+  `--transcribe` on channel/search → the whole batch uses captions. Errors clearly on non-YouTube.
+
 ## Adding a source
 Implement the `Source` protocol in `sources/<name>.py`, register it in `sources/__init__.py`,
 add a subparser in `cli.py`. If the platform is yt-dlp-supported, reuse the yt-dlp acquire path.

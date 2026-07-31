@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
-from glean.models import MediaItem
+from glean.models import MediaItem, Transcript, Word
 
 _VIDEO_ID = r"[A-Za-z0-9_-]{11}"
 _URL_ID_PATTERNS = [
@@ -149,3 +149,79 @@ def search(query: str, cfg, limit: int = 30) -> list[MediaItem]:
     """Search YouTube via yt-dlp's `ytsearchN:` provider and return metadata items."""
     n = limit or 30
     return _collect(_flat_entries(f"ytsearch{n}:{query}", n), n)
+
+
+def _pick_caption_track(tracks: dict, want: str) -> tuple[str | None, list | None]:
+    """Choose a caption track from a {lang: [formats]} map, preferring `want`'s language."""
+    if not tracks:
+        return None, None
+    base = want.split("-")[0].lower()
+    if want in tracks:
+        return want, tracks[want]
+    for lang, fmts in tracks.items():
+        if lang.split("-")[0].lower() == base:
+            return lang, fmts
+    lang, fmts = next(iter(tracks.items()))
+    return lang, fmts
+
+
+def _json3_transcript(events: list, lang: str | None, model: str) -> Transcript:
+    """Parse a YouTube json3 caption payload into a Transcript with word-level timings."""
+    words: list[Word] = []
+    lines: list[str] = []
+    for event in events:
+        segs = event.get("segs")
+        if not segs:
+            continue
+        ev_start = event.get("tStartMs") or 0
+        ev_end = ev_start + (event.get("dDurationMs") or 0)
+        line_parts: list[str] = []
+        for i, seg in enumerate(segs):
+            raw = seg.get("utf8", "")
+            line_parts.append(raw)
+            token = raw.strip()
+            if not token:
+                continue
+            start = (ev_start + (seg.get("tOffsetMs") or 0)) / 1000.0
+            nxt = next((s["tOffsetMs"] for s in segs[i + 1:] if "tOffsetMs" in s), None)
+            end = (ev_start + nxt) / 1000.0 if nxt is not None else ev_end / 1000.0
+            words.append(Word(text=token, start=start, end=max(start, end)))
+        line = "".join(line_parts).strip()
+        if line:
+            lines.append(line)
+    duration = words[-1].end if words else None
+    return Transcript(text=" ".join(lines), words=words, language=lang, backend="youtube-captions", model=model, duration=duration)
+
+
+def captions(url: str, cfg, language: str | None = None) -> Transcript:
+    """Fetch YouTube's own captions (manual preferred, else auto) as a Transcript.
+
+    Reads the json3 caption track via yt-dlp metadata + requests. No audio download.
+    Raises RuntimeError when the video exposes no usable caption track.
+    """
+    import requests
+    import yt_dlp
+
+    video_id = _extract_video_id(url)
+    target = _watch_url(video_id) if video_id else url
+    ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(target, download=False)
+
+    want = (language or "en").strip() or "en"
+    lang, fmts = _pick_caption_track(info.get("subtitles") or {}, want)
+    model = "manual"
+    if fmts is None:
+        lang, fmts = _pick_caption_track(info.get("automatic_captions") or {}, want)
+        model = "auto"
+    json3 = next((f for f in (fmts or []) if f.get("ext") == "json3" and f.get("url")), None)
+    if json3 is None:
+        raise RuntimeError(f"no captions available for {url}")
+
+    resp = requests.get(json3["url"], timeout=30)
+    resp.raise_for_status()
+    events = (resp.json() or {}).get("events") or []
+    tx = _json3_transcript(events, lang, model)
+    if not tx.text:
+        raise RuntimeError(f"no captions available for {url}")
+    return tx

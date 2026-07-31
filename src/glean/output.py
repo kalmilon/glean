@@ -12,10 +12,12 @@ This module prints nothing; the CLI decides human vs `--json` presentation.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
+import glean
 from glean.config import Config
-from glean.models import MediaItem, Result, Transcript, Word
+from glean.models import RECORD_VERSION, MediaItem, Result, Transcript, Word
 
 _MAX_CUE_WORDS = 10
 _MAX_CUE_GAP = 1.0     # seconds of silence that forces a new cue
@@ -46,6 +48,27 @@ def write_result(item: MediaItem, tx: Transcript | None, cfg: Config) -> Result:
         files["srt"] = str(srt_path)
 
     return Result(item=item, transcript=tx, out_dir=str(job), files=files)
+
+
+def write_run_manifest(run_dir, kind: str, params: dict, records: list, note=None, transcribed: bool = False) -> str:
+    """Write <run_dir>/run.json — a versioned index of one discovery/batch run — and return its path."""
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "_v": RECORD_VERSION,
+        "tool": "glean",
+        "version": glean.__version__,
+        "kind": kind,
+        "created": datetime.now(timezone.utc).isoformat(),
+        "note": note,
+        "params": params,
+        "count": len(records),
+        "transcribed": transcribed,
+        "results": [r.to_dict() if hasattr(r, "to_dict") else str(r) for r in records],
+    }
+    path = run_dir / "run.json"
+    _write_json(path, manifest)
+    return str(path)
 
 
 def to_srt(tx: Transcript) -> str:

@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from glean.config import Config
 from glean.sources import detect_source
@@ -39,12 +40,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_yt = sub.add_parser("yt", parents=[common], help="YouTube: a video URL/ID, or `channel <@handle>` / `search <query>`")
     p_yt.add_argument("target", nargs="+", metavar="TARGET", help="video URL/ID, or `channel <@handle>` / `search <query>`")
     p_yt.add_argument("--limit", type=int, default=30, help="max items for channel/search (default 30)")
+    p_yt.add_argument("--transcribe", action="store_true", help="transcribe every channel/search result (default: metadata only)")
+    p_yt.add_argument("--captions", action="store_true", help="use YouTube's own captions instead of local transcription (YouTube only)")
+    p_yt.add_argument("--run-dir", metavar="DIR", dest="run_dir", help="collect this run's job dirs under DIR and write a run.json manifest")
+    p_yt.add_argument("--run-note", metavar="TEXT", dest="run_note", help="a note recorded in the run.json manifest")
 
     p_ig = sub.add_parser("ig", parents=[common], help="Instagram: reel URL, `list`/`scout <@acct>`, `profile <@handle>`, `search <query>`")
     p_ig.add_argument("target", nargs="+", metavar="TARGET", help="reel URL, or `list`/`scout <@acct>`, `profile <@handle>`, `search <query>`")
     p_ig.add_argument("--limit", type=int, default=24, help="max results for `list`/`search` (default 24)")
     p_ig.add_argument("--top", type=int, default=30, help="max results for `scout` (default 30)")
     p_ig.add_argument("--since-days", type=int, default=90, dest="since_days", help="`scout` recency window in days (default 90)")
+    p_ig.add_argument("--transcribe", action="store_true", help="transcribe every list/scout result (default: metadata only)")
+    p_ig.add_argument("--run-dir", metavar="DIR", dest="run_dir", help="collect this run's job dirs under DIR and write a run.json manifest")
+    p_ig.add_argument("--run-note", metavar="TEXT", dest="run_note", help="a note recorded in the run.json manifest")
 
     p_tw = sub.add_parser("twitch", parents=[common], help="Twitch VOD or clip → transcribe")
     p_tw.add_argument("target", help="a Twitch VOD or clip URL")
@@ -77,14 +85,18 @@ def _cmd_yt(args, parser: argparse.ArgumentParser, cfg: Config) -> int:
         if len(tokens) < 2:
             parser.error("yt channel needs a <@handle|URL>")
         from glean.sources import youtube
-        _emit_items(youtube.channel(tokens[1], cfg, limit=args.limit), cfg)
-        return 0
+        items = youtube.channel(tokens[1], cfg, limit=args.limit)
+        return _run_discovery(items, "yt-channel", {"handle": tokens[1], "limit": args.limit}, args, cfg)
     if verb == "search":
         query = " ".join(tokens[1:]).strip()
         if not query:
             parser.error("yt search needs a query")
         from glean.sources import youtube
-        _emit_items(youtube.search(query, cfg, limit=args.limit), cfg)
+        items = youtube.search(query, cfg, limit=args.limit)
+        return _run_discovery(items, "yt-search", {"query": query, "limit": args.limit}, args, cfg)
+    if args.captions:
+        from glean import pipeline
+        _emit_result(pipeline.transcribe_url(tokens[0], cfg, backend=cfg.backend, captions=True), cfg)
         return 0
     return _transcribe_one(tokens[0], cfg)
 
@@ -96,28 +108,26 @@ def _cmd_ig(args, parser: argparse.ArgumentParser, cfg: Config) -> int:
         if len(tokens) < 2:
             parser.error("ig list needs an <@account>")
         from glean.sources import instagram
-        _emit_items(instagram.list_account(tokens[1], cfg, limit=args.limit), cfg)
-        return 0
+        items = instagram.list_account(tokens[1], cfg, limit=args.limit)
+        return _run_discovery(items, "ig-list", {"account": tokens[1], "limit": args.limit}, args, cfg)
     if verb == "scout":
         usernames = tokens[1:]
         if not usernames:
             parser.error("ig scout needs one or more <@account> arguments")
         from glean.sources import instagram
-        _emit_items(instagram.scout(usernames, cfg, top=args.top, since_days=args.since_days), cfg)
-        return 0
+        items = instagram.scout(usernames, cfg, top=args.top, since_days=args.since_days)
+        return _run_discovery(items, "ig-scout", {"accounts": usernames, "top": args.top, "since_days": args.since_days}, args, cfg)
     if verb == "profile":
         if len(tokens) < 2:
             parser.error("ig profile needs an <@handle>")
         from glean.sources import instagram
-        _emit_profiles([instagram.profile(tokens[1], cfg)], cfg)
-        return 0
+        return _run_profiles([instagram.profile(tokens[1], cfg)], "ig-profile", {"handle": tokens[1]}, args, cfg)
     if verb == "search":
         query = " ".join(tokens[1:]).strip()
         if not query:
             parser.error("ig search needs a <query>")
         from glean.sources import instagram
-        _emit_profiles(instagram.search(query, cfg, limit=args.limit), cfg)
-        return 0
+        return _run_profiles(instagram.search(query, cfg, limit=args.limit), "ig-search", {"query": query, "limit": args.limit}, args, cfg)
     return _transcribe_one(tokens[0], cfg)
 
 
@@ -130,6 +140,52 @@ def _cmd_doctor(cfg: Config) -> int:
     from glean import setup_cmd
     setup_cmd.run_doctor(cfg)
     return 0
+
+
+def _run_discovery(items, kind: str, params: dict, args, cfg: Config) -> int:
+    """Emit discovered MediaItems — transcribing them first when `--transcribe` is set — and write a run.json manifest when `--run-dir` is given.
+
+    Records land in the manifest as Results (transcribed) or MediaItems (metadata only). Setting cfg.out_dir before transcription pulls every per-item job dir inside the run directory.
+    """
+    run_dir = getattr(args, "run_dir", None)
+    if run_dir:
+        cfg.out_dir = Path(run_dir)
+    transcribe = bool(getattr(args, "transcribe", False))
+    if transcribe:
+        from glean import batch
+        records = batch.transcribe_items(list(items), cfg, captions=bool(getattr(args, "captions", False)))
+        _emit_results(records, cfg)
+    else:
+        records = list(items)
+        _emit_items(records, cfg)
+    if run_dir:
+        from glean.output import write_run_manifest
+        path = write_run_manifest(run_dir, kind, params, records, note=getattr(args, "run_note", None), transcribed=transcribe)
+        print(f"run: {path}", file=sys.stderr)
+    return 0
+
+
+def _run_profiles(profiles, kind: str, params: dict, args, cfg: Config) -> int:
+    """Emit Profiles and, when `--run-dir` is given, write a run.json manifest of them (profiles are never transcribed)."""
+    profiles = list(profiles)
+    _emit_profiles(profiles, cfg)
+    run_dir = getattr(args, "run_dir", None)
+    if run_dir:
+        from glean.output import write_run_manifest
+        path = write_run_manifest(run_dir, kind, params, profiles, note=getattr(args, "run_note", None), transcribed=False)
+        print(f"run: {path}", file=sys.stderr)
+    return 0
+
+
+def _emit_results(results, cfg: Config) -> None:
+    """Emit a batch of Results — a JSON array under `--json`, else a per-item human summary."""
+    results = list(results)
+    if cfg.json_output:
+        print(json.dumps([r.to_dict() for r in results]))
+        return
+    print(f"{len(results)} transcript(s)")
+    for result in results:
+        _emit_result(result, cfg)
 
 
 def _emit_result(result, cfg: Config) -> None:

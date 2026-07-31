@@ -47,6 +47,42 @@ Add `--json` to print machine-readable results to stdout (for agents/pipelines),
 `--backend {parakeet,whisper.cpp}` to force an engine, `--language CODE` to hint,
 `--keep-audio` to retain the downloaded media.
 
+## Batch transcription & run manifests
+
+Discovery verbs (`yt channel`, `yt search`, `ig list`, `ig scout`) emit **metadata only**
+by default. Add `--transcribe` to run every result through the pipeline and get transcripts
+back instead. Per-item failures are logged to stderr and skipped — one bad video never
+aborts the batch.
+
+```bash
+glean yt channel @handle --limit 20 --transcribe          # transcribe a whole channel feed
+glean ig list @account --limit 24 --transcribe --json      # transcripts as a JSON array
+```
+
+`--run-dir DIR` bundles a whole run into one place: every per-item job dir lands under `DIR`,
+and glean writes a `DIR/run.json` manifest — a versioned index of the run (`_v`, `tool`,
+`version`, `kind`, `created`, `note`, `params`, `count`, `transcribed`, and a per-record
+summary). Pair it with `--run-note TEXT` to stamp a description into the manifest. It works on
+every discovery verb, transcribing or not (including `ig profile`/`ig search`, which record the
+returned profiles).
+
+```bash
+glean yt search "climbing drills" --limit 15 --transcribe \
+    --run-dir ~/research/climbing --run-note "drill breakdowns for the coaching deck"
+# → ~/research/climbing/youtube/<id>/... plus ~/research/climbing/run.json
+```
+
+## YouTube captions (skip transcription)
+
+`--captions` is **YouTube only**: pull YouTube's own caption track instead of downloading audio
+and transcribing locally. Fast and free when a video is already captioned; glean errors clearly
+if the URL isn't YouTube or the video has no captions.
+
+```bash
+glean yt https://youtu.be/VIDEO --captions                 # one video, via its captions
+glean yt channel @handle --transcribe --captions           # caption the whole feed
+```
+
 ## Instagram search & cookies
 
 `ig profile <@handle>` works anonymously. Free-text `ig search <query>` does **not** —

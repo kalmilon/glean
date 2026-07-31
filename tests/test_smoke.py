@@ -7,6 +7,7 @@ persisted record.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -96,3 +97,42 @@ def test_ig_search_requires_cookie(monkeypatch):
     from glean.sources import instagram
     with pytest.raises(RuntimeError, match="session cookie"):
         instagram.search("anything", cfg=None)
+
+
+def test_write_run_manifest(tmp_path):
+    from glean.output import write_run_manifest
+
+    items = [
+        MediaItem(source="youtube", url="https://youtu.be/aaaaaaaaaaa", id="aaaaaaaaaaa", title="One"),
+        MediaItem(source="youtube", url="https://youtu.be/bbbbbbbbbbb", id="bbbbbbbbbbb", title="Two"),
+    ]
+    path = write_run_manifest(tmp_path, "yt-channel", {"handle": "@x", "limit": 30}, items, note="a note", transcribed=False)
+
+    assert path == str(tmp_path / "run.json")
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    assert data["_v"] == RECORD_VERSION
+    assert data["tool"] == "glean"
+    assert data["kind"] == "yt-channel"
+    assert data["count"] == 2
+    assert data["transcribed"] is False
+    assert data["note"] == "a note"
+    assert data["params"] == {"handle": "@x", "limit": 30}
+    assert "created" in data and "version" in data
+    assert len(data["results"]) == 2
+    assert data["results"][0]["_v"] == RECORD_VERSION
+
+
+def test_captions_on_non_youtube_raises(monkeypatch, tmp_path):
+    # The captions path is YouTube-only; on any other platform the pipeline must
+    # reject it up front (a RuntimeError) before it ever reaches the network.
+    monkeypatch.setenv("GLEAN_CONFIG", str(tmp_path / "no-such-config.toml"))
+    monkeypatch.setenv("GLEAN_OUT", str(tmp_path / "out"))
+    monkeypatch.setenv("GLEAN_CACHE", str(tmp_path / "cache"))
+    from glean import acquire, pipeline
+
+    def _no_network(*args, **kwargs):
+        raise AssertionError("captions guard must fire before any download")
+
+    monkeypatch.setattr(acquire, "download_audio", _no_network)
+    with pytest.raises(RuntimeError):
+        pipeline.transcribe_url("https://x.com/jack/status/20", Config.resolve(), captions=True)
