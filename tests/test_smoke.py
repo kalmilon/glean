@@ -144,3 +144,19 @@ def test_ytdlp_cookie_opts():
     assert ytdlp_cookie_opts(Config.resolve(env={"GLEAN_YT_COOKIES": "/tmp/c.txt"})) == {"cookiefile": "/tmp/c.txt"}
     assert ytdlp_cookie_opts(Config.resolve(env={})) == {}
     assert ytdlp_cookie_opts(None) == {}
+
+
+def test_doctor_resolvers(tmp_path, monkeypatch):
+    """yt-dlp is detected as a module (not a PATH binary), and whisper resolves
+    from the setup-built cache location even when nothing is on PATH."""
+    from glean import setup_cmd
+    from glean.config import Config
+    assert setup_cmd._ytdlp_version()  # ships as a dependency
+    built = tmp_path / "whisper.cpp" / "build" / "bin" / "whisper-cli"
+    built.parent.mkdir(parents=True)
+    built.write_text("#!/bin/sh\n")
+    built.chmod(0o755)
+    cfg = Config.resolve(env={"GLEAN_CACHE": str(tmp_path)})
+    monkeypatch.setenv("PATH", "")
+    assert setup_cmd._whisper_bin({}, cfg) == str(built)
+    assert setup_cmd._whisper_bin({}) is None

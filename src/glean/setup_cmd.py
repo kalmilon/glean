@@ -32,8 +32,9 @@ def _fluidaudio_bin(env=os.environ) -> str | None:
     return shutil.which(env.get("GLEAN_FLUIDAUDIO_BIN") or FLUIDAUDIO_BIN)
 
 
-def _whisper_bin(env=os.environ) -> str | None:
-    """Resolve the whisper.cpp binary: $GLEAN_WHISPER_BIN, else the first known name on PATH."""
+def _whisper_bin(env=os.environ, cfg=None) -> str | None:
+    """Resolve the whisper.cpp binary the same way the backend does: $GLEAN_WHISPER_BIN,
+    then PATH, then the location `glean setup` builds it into (under cfg.cache_dir)."""
     override = env.get("GLEAN_WHISPER_BIN")
     if override:
         return shutil.which(override) or (override if Path(override).exists() else None)
@@ -41,7 +42,21 @@ def _whisper_bin(env=os.environ) -> str | None:
         found = shutil.which(candidate)
         if found:
             return found
+    if cfg is not None:
+        built = _find_built_whisper(cfg.cache_dir / "whisper.cpp")
+        if built:
+            return str(built)
     return None
+
+
+def _ytdlp_version() -> str | None:
+    """glean shells out to the yt_dlp *module*, not the binary, so check the import
+    (a `uv tool install` never links the yt-dlp entry point onto PATH)."""
+    try:
+        import yt_dlp
+        return getattr(getattr(yt_dlp, "version", None), "__version__", "installed")
+    except Exception:
+        return None
 
 
 # --- doctor ---
@@ -55,10 +70,10 @@ def run_doctor(cfg: Config, env=os.environ) -> int:
     mac = sys.platform == "darwin"
 
     ffmpeg = shutil.which("ffmpeg")
-    ytdlp = shutil.which("yt-dlp")
+    ytdlp = _ytdlp_version()
     podman = shutil.which("podman")
     fluid = _fluidaudio_bin(env)
-    whisper = _whisper_bin(env)
+    whisper = _whisper_bin(env, cfg)
     model = cfg.default_whisper_model()
     model_present = model.exists()
 
@@ -70,7 +85,7 @@ def run_doctor(cfg: Config, env=os.environ) -> int:
 
     report.append("Media tools")
     report.append(_line(bool(ffmpeg), "ffmpeg", ffmpeg or "not found — install ffmpeg"))
-    report.append(_line(bool(ytdlp), "yt-dlp", ytdlp or "not found — `uv pip install yt-dlp`"))
+    report.append(_line(bool(ytdlp), "yt-dlp", f"{ytdlp} (python module)" if ytdlp else "not found — reinstall glean (yt_dlp ships as a dependency)"))
     report.append(_line(bool(podman), "podman (Instagram/Cobalt)", podman or "not found — optional, only needed for Instagram"))
     report.append("")
 
@@ -132,7 +147,7 @@ def _setup_macos(cfg: Config, env) -> int:
 def _setup_linux(cfg: Config, env) -> int:
     rc = 0
 
-    whisper = _whisper_bin(env)
+    whisper = _whisper_bin(env, cfg)
     if whisper:
         print(f"whisper.cpp binary present: {whisper}")
     else:
