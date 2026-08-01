@@ -278,6 +278,79 @@ def scout(usernames: list[str], cfg, top: int = 30, since_days: int = 90) -> lis
     return [media for _, media in scored[:top]]
 
 
+def _post_json(url: str, data: dict, cfg=None) -> dict:
+    """POST a form-encoded Instagram endpoint with the same backoff as _get_json."""
+    headers = {**_headers(cfg), "content-type": "application/x-www-form-urlencoded", "x-requested-with": "XMLHttpRequest"}
+    last_error: Exception | None = None
+    for attempt in range(1, _RETRIES + 1):
+        try:
+            resp = requests.post(url, headers=headers, data=data, timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
+            resp.raise_for_status()
+            return resp.json()
+        except (requests.RequestException, ValueError) as exc:
+            last_error = exc
+            if attempt < _RETRIES:
+                time.sleep(2 ** (attempt - 1))
+    raise RuntimeError(f"Instagram request failed after {_RETRIES} attempts: {url}") from last_error
+
+
+def cluster_id_of(target: str) -> str:
+    """Accept a bare audio cluster id or a /reels/audio/<id>/ URL and return the id."""
+    text = target.strip()
+    m = re.search(r"/reels?/audio/(\d+)", text)
+    if m:
+        return m.group(1)
+    if text.isdigit():
+        return text
+    raise ValueError(f"not an audio cluster id or /reels/audio/ URL: {target!r}")
+
+
+def reels_for_sound(audio_cluster_id: str, cfg, limit: int = 24) -> list[MediaItem]:
+    """Every reel Instagram will show for one sound — real usage, not a sample of accounts.
+
+    This is the number `sounds()` cannot give: it counts what a run happened to fetch, while this
+    asks Instagram directly who is using a track. The endpoint is the one the /reels/audio/ page
+    calls, and it is cookie-only — the page itself server-renders nothing, so there is no anonymous
+    path to the same answer.
+    """
+    if not _cookie(cfg):
+        raise RuntimeError(
+            "Listing the reels on a sound requires a session cookie — Instagram serves this only to "
+            "a logged-in caller. Copy the `sessionid` cookie from your logged-in instagram.com and "
+            "set GLEAN_IG_SESSIONID (or ig_sessionid in config)."
+        )
+
+    items: list[MediaItem] = []
+    seen: set[str] = set()
+    max_id = ""
+    while len(items) < limit:
+        payload = {"audio_cluster_id": audio_cluster_id, "original_sound_audio_asset_id": ""}
+        if max_id:
+            payload["max_id"] = max_id
+        data = _post_json("https://www.instagram.com/api/v1/clips/music/", payload, cfg)
+        batch = data.get("items") or []
+        if not batch:
+            break
+        for row in batch:
+            # The endpoint wraps each reel in {"media": {...}}; older shapes hand back the media flat.
+            media = row.get("media") if isinstance(row, dict) and "media" in row else row
+            if not isinstance(media, dict):
+                continue
+            code = media.get("code")
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            items.append(_item_from_media(media))
+            if len(items) >= limit:
+                break
+        max_id = (data.get("paging_info") or {}).get("max_id") or ""
+        if not max_id:
+            break
+        # Same deliberate low rate as the anonymous feed paging above.
+        time.sleep(2)
+    return items
+
+
 # --- Sounds: which audio a set of accounts is actually building on ---
 
 

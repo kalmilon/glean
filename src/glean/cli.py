@@ -54,8 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_yt.add_argument("--transcribe", action="store_true", help="transcribe every channel/search result (default: metadata only)")
     p_yt.add_argument("--captions", action="store_true", help="use YouTube's own captions instead of local transcription (YouTube only)")
 
-    p_ig = sub.add_parser("ig", parents=[common, runflags], help="Instagram: reel URL, `list`/`scout`/`sounds <@acct>`, `profile <@handle>`, `search <query>`")
-    p_ig.add_argument("target", nargs="+", metavar="TARGET", help="reel URL, or `list`/`scout`/`sounds <@acct>`, `profile <@handle>`, `search <query>`")
+    p_ig = sub.add_parser("ig", parents=[common, runflags], help="Instagram: reel URL, `list`/`scout`/`sounds <@acct>`, `sound <id>`, `profile <@handle>`, `search <query>`")
+    p_ig.add_argument("target", nargs="+", metavar="TARGET", help="reel URL, or `list`/`scout`/`sounds <@acct>`, `sound <id>`, `profile <@handle>`, `search <query>`")
     p_ig.add_argument("--limit", type=int, default=24, help="max results for `list`/`search` (default 24)")
     p_ig.add_argument("--top", type=int, default=30, help="max results for `scout` (default 30)")
     p_ig.add_argument("--since-days", type=int, default=90, dest="since_days", help="`scout` recency window in days (default 90)")
@@ -167,6 +167,13 @@ def _cmd_ig(args, parser: argparse.ArgumentParser, cfg: Config) -> int:
         from glean.sources import instagram
         items = instagram.scout(usernames, cfg, top=args.top, since_days=args.since_days)
         return _run_discovery(items, "ig-scout", {"accounts": usernames, "top": args.top, "since_days": args.since_days}, args, cfg)
+    if verb == "sound":
+        if len(tokens) < 2:
+            parser.error("ig sound needs an audio cluster id or a /reels/audio/ URL")
+        from glean.sources import instagram
+        cid = instagram.cluster_id_of(tokens[1])
+        items = instagram.reels_for_sound(cid, cfg, limit=args.limit)
+        return _run_discovery(items, "ig-sound", {"audio_cluster_id": cid, "limit": args.limit}, args, cfg)
     if verb == "sounds":
         accounts = tokens[1:]
         if not accounts:

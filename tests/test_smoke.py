@@ -361,3 +361,61 @@ def test_tiktok_surfaces_the_ytdlp_error_when_cobalt_also_fails(monkeypatch, tmp
 
     with pytest.raises(RuntimeError, match="unable to extract universal data"):
         acquire.download_audio("https://www.tiktok.com/@a/video/123", cfg)
+
+
+def test_cluster_id_accepts_id_or_url():
+    from glean.sources.instagram import cluster_id_of
+
+    assert cluster_id_of("1939359193596829") == "1939359193596829"
+    assert cluster_id_of("https://www.instagram.com/reels/audio/1939359193596829/") == "1939359193596829"
+    with pytest.raises(ValueError, match="audio cluster id"):
+        cluster_id_of("@someone")
+
+
+def test_reels_for_sound_requires_a_cookie(monkeypatch):
+    from glean.sources import instagram
+
+    monkeypatch.delenv("GLEAN_IG_SESSIONID", raising=False)
+    with pytest.raises(RuntimeError, match="session cookie"):
+        instagram.reels_for_sound("123", cfg=None)
+
+
+def test_reels_for_sound_pages_and_dedupes(monkeypatch):
+    """The endpoint wraps reels in {"media": ...}, pages by max_id, and can repeat across pages."""
+    from glean.sources import instagram
+
+    monkeypatch.setenv("GLEAN_IG_SESSIONID", "fake")
+    monkeypatch.setattr(instagram.time, "sleep", lambda *_: None)
+
+    pages = [
+        {"items": [{"media": {"code": "A", "play_count": 10}}, {"media": {"code": "B", "play_count": 20}}],
+         "paging_info": {"max_id": "cursor1"}},
+        # "B" repeats, and this page hands the media back flat rather than wrapped.
+        {"items": [{"code": "B", "play_count": 20}, {"code": "C", "play_count": 30}], "paging_info": {}},
+    ]
+    calls = []
+
+    def fake_post(url, data, cfg=None):
+        calls.append(data)
+        return pages[len(calls) - 1]
+
+    monkeypatch.setattr(instagram, "_post_json", fake_post)
+
+    items = instagram.reels_for_sound("999", cfg=None, limit=24)
+    assert [i.id for i in items] == ["A", "B", "C"], "a reel seen twice must appear once"
+    assert calls[0]["audio_cluster_id"] == "999" and "max_id" not in calls[0]
+    assert calls[1]["max_id"] == "cursor1", "the second page must carry the cursor"
+    assert all(i.source == "instagram" for i in items)
+
+
+def test_reels_for_sound_stops_at_limit(monkeypatch):
+    from glean.sources import instagram
+
+    monkeypatch.setenv("GLEAN_IG_SESSIONID", "fake")
+    monkeypatch.setattr(instagram.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(instagram, "_post_json", lambda url, data, cfg=None: {
+        "items": [{"media": {"code": f"c{n}", "play_count": n}} for n in range(10)],
+        "paging_info": {"max_id": "more"},
+    })
+
+    assert len(instagram.reels_for_sound("999", cfg=None, limit=3)) == 3
