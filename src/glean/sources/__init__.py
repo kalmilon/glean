@@ -4,7 +4,7 @@ source module never takes down the whole CLI.
 
 from __future__ import annotations
 
-_SOURCES = ("youtube", "instagram", "twitch", "x")
+_SOURCES = ("youtube", "instagram", "tiktok", "twitch", "x")
 
 
 def get_source(name: str):
@@ -15,6 +15,9 @@ def get_source(name: str):
     if name == "instagram":
         from glean.sources.instagram import InstagramSource
         return InstagramSource()
+    if name == "tiktok":
+        from glean.sources.tiktok import TikTokSource
+        return TikTokSource()
     if name == "twitch":
         from glean.sources.twitch import TwitchSource
         return TwitchSource()

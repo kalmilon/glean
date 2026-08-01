@@ -264,3 +264,100 @@ def test_sounds_music_only_drops_original_audio(monkeypatch):
 
     assert [s.id for s in instagram.sounds(["@one"], cfg=None, music_only=True)] == ["c1"]
     assert len(instagram.sounds(["@one"], cfg=None)) == 2
+
+
+def _tt(vid, views, track, artist=None, uploader=None, ts=9_999_999_999):
+    return {"id": vid, "url": f"https://www.tiktok.com/@{uploader or 'x'}/video/{vid}",
+            "view_count": views, "track": track, "artist": artist, "uploader": uploader, "timestamp": ts}
+
+
+def test_tiktok_original_sound_is_keyed_per_creator():
+    """Every creator's own audio is called "original sound"; keying on the title alone merged the lot.
+
+    Before this, 39 videos across two unrelated accounts reported as one shared sound.
+    """
+    from glean.sources.tiktok import _sound_of
+
+    a = _sound_of(_tt("1", 10, "original sound", artist=None, uploader="alice"))
+    b = _sound_of(_tt("2", 10, "original sound", artist=None, uploader="bob"))
+    assert a[0] != b[0], "two creators' original sounds must not share an id"
+    assert a[1] == b[1] == "original_sounds"
+    assert a[3] == "alice", "a blank artist field falls back to the uploader"
+
+    # The suffixed form is the same thing and must not be filed as licensed music.
+    suffixed = _sound_of(_tt("3", 10, "original sound - alice", artist="alice", uploader="alice"))
+    assert suffixed[1] == "original_sounds"
+
+    # A real track groups on name + artist, across accounts.
+    t1 = _sound_of(_tt("4", 10, "Some Track", artist="A Band", uploader="alice"))
+    t2 = _sound_of(_tt("5", 10, "some track", artist="A Band", uploader="bob"))
+    assert t1[0] == t2[0] and t1[1] == "licensed_music"
+
+    assert _sound_of(_tt("6", 10, "")) is None
+
+
+def test_tiktok_sounds_group_and_rank(monkeypatch):
+    from glean.sources import tiktok
+
+    feeds = {
+        "alice": [_tt("1", 100, "Shared", "Band", "alice"), _tt("2", 900, "original sound", None, "alice")],
+        "bob": [_tt("3", 200, "Shared", "Band", "bob")],
+    }
+    monkeypatch.setattr(tiktok, "_extract", lambda url, **kw: {"entries": feeds[url.rsplit("@", 1)[1]]})
+
+    found = tiktok.sounds(["@alice", "@bob"], cfg=None)
+    assert [s.title for s in found] == ["Shared", "original sound"], "reuse outranks a louder lone video"
+    assert found[0].uses == 2 and found[0].total_plays == 300
+    assert found[0].accounts == ["alice", "bob"]
+    assert found[0].source == "tiktok"
+    # TikTok's music page needs a numeric id yt-dlp does not report — better empty than guessed.
+    assert found[0].url == ""
+
+    assert [s.title for s in tiktok.sounds(["@alice"], cfg=None, music_only=True)] == ["Shared"]
+
+
+def test_tiktok_falls_back_to_cobalt_when_ytdlp_breaks(monkeypatch, tmp_path):
+    """TikTok's extractor breaks for stretches; a broken extractor must not cost the transcript."""
+    from glean import acquire
+
+    cfg = Config.resolve()
+    cfg.out_dir = tmp_path
+
+    def broken_ytdlp(url, c, source):
+        raise RuntimeError("yt-dlp failed: unable to extract universal data for rehydration")
+
+    calls = {}
+
+    def fake_cobalt(url, wav, c, job):
+        calls["url"] = url
+        Path(wav).parent.mkdir(parents=True, exist_ok=True)
+        Path(wav).write_bytes(b"RIFF")
+
+    monkeypatch.setattr(acquire, "_acquire_ytdlp", broken_ytdlp)
+    monkeypatch.setattr(acquire, "_cobalt_download_to_wav", fake_cobalt)
+
+    url = "https://www.tiktok.com/@someone/video/7668726289376808222"
+    item, wav = acquire.download_audio(url, cfg)
+    assert item.source == "tiktok"
+    assert item.id == "7668726289376808222", "the id comes off the URL when yt-dlp gave nothing"
+    assert calls["url"] == url and Path(wav).exists()
+
+
+def test_tiktok_surfaces_the_ytdlp_error_when_cobalt_also_fails(monkeypatch, tmp_path):
+    """Cobalt being absent must not mask the real reason — the extractor is what broke."""
+    from glean import acquire
+
+    cfg = Config.resolve()
+    cfg.out_dir = tmp_path
+
+    def broken_ytdlp(url, c, source):
+        raise RuntimeError("yt-dlp failed: unable to extract universal data")
+
+    def no_cobalt(url, wav, c, job):
+        raise RuntimeError("Instagram downloads need Cobalt, and nothing is listening")
+
+    monkeypatch.setattr(acquire, "_acquire_ytdlp", broken_ytdlp)
+    monkeypatch.setattr(acquire, "_cobalt_download_to_wav", no_cobalt)
+
+    with pytest.raises(RuntimeError, match="unable to extract universal data"):
+        acquire.download_audio("https://www.tiktok.com/@a/video/123", cfg)

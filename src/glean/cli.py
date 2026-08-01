@@ -62,6 +62,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_ig.add_argument("--transcribe", action="store_true", help="transcribe every list/scout result (default: metadata only)")
     p_ig.add_argument("--music-only", action="store_true", dest="music_only", help="`sounds`: only licensed tracks, which are the ones anyone can reuse")
 
+    p_tt = sub.add_parser("tt", parents=[common, runflags], help="TikTok: a video URL, or `list`/`sounds <@acct>`")
+    p_tt.add_argument("target", nargs="+", metavar="TARGET", help="video URL, or `list <@acct>` / `sounds <@acct>...`")
+    p_tt.add_argument("--limit", type=int, default=30, help="videos fetched per account (default 30)")
+    p_tt.add_argument("--top", type=int, default=30, help="`sounds`: how many to report (default 30)")
+    p_tt.add_argument("--since-days", type=int, default=90, dest="since_days", help="`sounds`: recency window in days (default 90)")
+    p_tt.add_argument("--transcribe", action="store_true", help="transcribe every list result (default: metadata only)")
+    p_tt.add_argument("--music-only", action="store_true", dest="music_only", help="`sounds`: only licensed tracks, which are the ones anyone can reuse")
+
     p_tw = sub.add_parser("twitch", parents=[common, runflags], help="Twitch VOD or clip → transcribe")
     p_tw.add_argument("target", help="a Twitch VOD or clip URL")
 
@@ -121,6 +129,25 @@ def _cmd_yt(args, parser: argparse.ArgumentParser, cfg: Config) -> int:
         from glean.sources import youtube
         items = youtube.search(query, cfg, limit=args.limit)
         return _run_discovery(items, "yt-search", {"query": query, "limit": args.limit}, args, cfg)
+    return _transcribe_one(tokens[0], args, cfg)
+
+
+def _cmd_tt(args, parser: argparse.ArgumentParser, cfg: Config) -> int:
+    tokens = args.target
+    verb = tokens[0].lower()
+    if verb == "list":
+        if len(tokens) < 2:
+            parser.error("tt list needs an <@account>")
+        from glean.sources import tiktok
+        items = tiktok.list_account(tokens[1], cfg, limit=args.limit)
+        return _run_discovery(items, "tt-list", {"account": tokens[1], "limit": args.limit}, args, cfg)
+    if verb == "sounds":
+        accounts = tokens[1:]
+        if not accounts:
+            parser.error("tt sounds needs one or more <@account> arguments")
+        from glean.sources import tiktok
+        found = tiktok.sounds(accounts, cfg, top=args.top, limit=args.limit, since_days=args.since_days, music_only=args.music_only)
+        return _run_sounds(found, "tt-sounds", {"accounts": accounts, "top": args.top, "since_days": args.since_days, "music_only": args.music_only}, args, cfg)
     return _transcribe_one(tokens[0], args, cfg)
 
 
@@ -229,13 +256,17 @@ def _emit_sounds(found, cfg: Config) -> None:
         print("no sounds found — the accounts' recent reels carry no audio metadata")
         return
     print(f"{len(found)} sound(s), most-used first")
+    # Each platform's own word for the thing a sound is attached to — "reel(s)" on a TikTok
+    # listing read like a bug in the tool rather than a label.
+    nouns = {"instagram": "reel", "tiktok": "video"}
     for s in found:
         name = s.title or "(untitled)"
         by = f" — {s.artist}" if s.artist else ""
         # "original" is worth flagging: it cannot be reused the way a licensed track can.
         tag = "original" if s.kind == "original_sounds" else "music"
+        noun = nouns.get(s.source, "post")
         print(f"- {name}{by}  [{tag}]")
-        print(f"    {s.uses} reel(s) · {s.total_plays:,} plays · {', '.join(s.accounts)}")
+        print(f"    {s.uses} {noun}(s) · {s.total_plays:,} plays · {', '.join(s.accounts)}")
         if s.url:
             print(f"    {s.url}")
         for example in s.examples[:2]:
@@ -320,6 +351,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_yt(args, parser, cfg)
         if args.command == "ig":
             return _cmd_ig(args, parser, cfg)
+        if args.command == "tt":
+            return _cmd_tt(args, parser, cfg)
         if args.command in ("twitch", "x"):
             return _transcribe_one(args.target, args, cfg)
         if args.command == "setup":

@@ -1,10 +1,12 @@
 """Media acquisition — turn a URL into (metadata, 16 kHz mono WAV).
 
-glean owns all downloading here. Two paths:
+glean owns all downloading here. Three paths:
 
   * Instagram → a local Cobalt resolver running in Podman. Cobalt hands back a
     direct media URL (no Instagram cookies); we fetch it and downmix to WAV.
     Metadata comes from Instagram's public oEmbed endpoint (App-ID header).
+  * TikTok → yt-dlp for its metadata, falling back to Cobalt when the extractor
+    is broken, which for TikTok is a recurring rather than exceptional state.
   * Everything else (YouTube / Twitch / X / generic) → yt-dlp for both the
     bestaudio download and the `-J` metadata, then ffmpeg to WAV.
 
@@ -36,6 +38,7 @@ COBALT_IMAGE = "ghcr.io/imputnet/cobalt:11"
 DEFAULT_COBALT_URL = "http://127.0.0.1:9000"
 
 _IG_SHORTCODE = re.compile(r"instagram\.com/(?:reel|reels|p|tv)/([^/?#]+)")
+_TIKTOK_ID = re.compile(r"tiktok\.com/(?:@[^/]+/)?(?:video|photo)/(\d+)")
 
 
 def download_audio(url: str, cfg: Config) -> tuple[MediaItem, str]:
@@ -43,6 +46,8 @@ def download_audio(url: str, cfg: Config) -> tuple[MediaItem, str]:
     source = _classify(url)
     if source == "instagram":
         return _acquire_instagram(url, cfg)
+    if source == "tiktok":
+        return _acquire_tiktok(url, cfg)
     return _acquire_ytdlp(url, cfg, source)
 
 
@@ -65,6 +70,38 @@ def _classify(url: str) -> str:
         return detect_source(url)
     except Exception:
         return "generic"
+
+
+# --- TikTok path (yt-dlp, then Cobalt) --------------------------------------
+
+
+def _acquire_tiktok(url: str, cfg: Config) -> tuple[MediaItem, str]:
+    """yt-dlp first for the metadata it carries, then Cobalt, which resolves media independently.
+
+    TikTok reshapes its page often enough that yt-dlp's extractor breaks for stretches at a time —
+    on 2026.7.4 it cannot extract a single video at all ("unable to extract universal data for
+    rehydration"), while account listings still work. Cobalt does not read that page, so falling
+    through to it costs the rich metadata rather than the transcript, which is the part worth
+    protecting. If Cobalt is unreachable the yt-dlp failure is what surfaces: it is the more
+    informative of the two, and the one that names the actual breakage.
+    """
+    try:
+        return _acquire_ytdlp(url, cfg, "tiktok")
+    except RuntimeError as ytdlp_error:
+        item = MediaItem(source="tiktok", url=url, id=_tiktok_id(url) or url)
+        job = cfg.job_dir(item)
+        wav = job / "audio.wav"
+        try:
+            _cobalt_download_to_wav(url, wav, cfg, job)
+        except Exception:
+            raise ytdlp_error from None
+        return item, str(wav)
+
+
+def _tiktok_id(url: str) -> str | None:
+    """The numeric video id in a TikTok URL, when it carries one."""
+    m = _TIKTOK_ID.search(url)
+    return m.group(1) if m else None
 
 
 # --- yt-dlp path (youtube / twitch / x / generic) ---------------------------
