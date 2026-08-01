@@ -45,6 +45,9 @@ _USERNAME_OK = re.compile(r"^[A-Za-z0-9._]+$")
 _RETRIES = 4
 _CONNECT_TIMEOUT = 10
 _READ_TIMEOUT = 30
+# Rate limiting clears on a slower clock than a generic blip; 1-2-4s was not enough to ride out
+# a burst of feed paging, which then surfaced as a permanent-looking failure on the next call.
+_RATE_LIMIT_BACKOFF = 15
 
 
 def _cookie(cfg) -> str | None:
@@ -65,19 +68,66 @@ def _headers(cfg=None) -> dict:
     return headers
 
 
-def _get_json(url: str, cfg=None) -> dict:
-    """GET a public Instagram JSON endpoint with exponential backoff."""
+def _raise_if_terminal(resp) -> None:
+    """Raise for the statuses no amount of retrying will change.
+
+    Retrying these was actively misleading: a cookie-gated endpoint answered 401 four times over
+    seven seconds and reported "request failed after 4 attempts", which reads as a flaky network
+    and sent the reader looking for one. Naming the wall is the whole point.
+    """
+    if resp.status_code in (401, 403):
+        raise _Unauthorized(
+            f"Instagram refused this anonymously (HTTP {resp.status_code}). It needs a session "
+            "cookie: copy `sessionid` from your logged-in instagram.com and set GLEAN_IG_SESSIONID "
+            "(or ig_sessionid in config)."
+        )
+
+
+class _Unauthorized(RuntimeError):
+    """Instagram requires a session cookie for this endpoint. Never retried."""
+
+
+def _request_json(method: str, url: str, cfg=None, data: dict | None = None) -> dict:
+    """Call an Instagram JSON endpoint, retrying only what retrying can fix.
+
+    Rate limiting is the failure worth waiting out, and it is slower to clear than the old
+    1-2-4-second ladder allowed — a burst of feed paging could leave a later profile lookup looking
+    permanently broken when it was only throttled. 429 therefore backs off harder than a generic
+    error, while 401/403 stop immediately.
+    """
+    headers = _headers(cfg)
+    if method == "POST":
+        headers = {**headers, "content-type": "application/x-www-form-urlencoded", "x-requested-with": "XMLHttpRequest"}
+
     last_error: Exception | None = None
     for attempt in range(1, _RETRIES + 1):
         try:
-            resp = requests.get(url, headers=_headers(cfg), timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
+            if method == "POST":
+                resp = requests.post(url, headers=headers, data=data or {}, timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
+            else:
+                resp = requests.get(url, headers=headers, timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
+            _raise_if_terminal(resp)
+            if resp.status_code == 429:
+                last_error = RuntimeError("HTTP 429 rate limited")
+                if attempt < _RETRIES:
+                    time.sleep(_RATE_LIMIT_BACKOFF * attempt)
+                continue
             resp.raise_for_status()
             return resp.json()
+        except _Unauthorized:
+            raise
         except (requests.RequestException, ValueError) as exc:
             last_error = exc
             if attempt < _RETRIES:
                 time.sleep(2 ** (attempt - 1))
-    raise RuntimeError(f"Instagram request failed after {_RETRIES} attempts: {url}") from last_error
+
+    hint = " — Instagram rate limits anonymous callers, so this often clears on its own" if "429" in str(last_error) else ""
+    raise RuntimeError(f"Instagram request failed after {_RETRIES} attempts{hint}: {url}") from last_error
+
+
+def _get_json(url: str, cfg=None) -> dict:
+    """GET a public Instagram JSON endpoint."""
+    return _request_json("GET", url, cfg)
 
 
 def _normalize_username(value: str) -> str:
@@ -279,19 +329,8 @@ def scout(usernames: list[str], cfg, top: int = 30, since_days: int = 90) -> lis
 
 
 def _post_json(url: str, data: dict, cfg=None) -> dict:
-    """POST a form-encoded Instagram endpoint with the same backoff as _get_json."""
-    headers = {**_headers(cfg), "content-type": "application/x-www-form-urlencoded", "x-requested-with": "XMLHttpRequest"}
-    last_error: Exception | None = None
-    for attempt in range(1, _RETRIES + 1):
-        try:
-            resp = requests.post(url, headers=headers, data=data, timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
-            resp.raise_for_status()
-            return resp.json()
-        except (requests.RequestException, ValueError) as exc:
-            last_error = exc
-            if attempt < _RETRIES:
-                time.sleep(2 ** (attempt - 1))
-    raise RuntimeError(f"Instagram request failed after {_RETRIES} attempts: {url}") from last_error
+    """POST a form-encoded Instagram endpoint."""
+    return _request_json("POST", url, cfg, data=data)
 
 
 def cluster_id_of(target: str) -> str:
@@ -494,17 +533,17 @@ def search(query: str, cfg=None, limit: int = 20) -> list[Profile]:
     """Search Instagram for accounts matching a free-text query.
 
     Instagram blocks anonymous search, so this needs a logged-in `sessionid`
-    (set $GLEAN_IG_SESSIONID or `ig_sessionid` in config). `profile()` is not a
-    cookie-free alternative — it reads the same gated endpoint — but `list()`
-    is, so a known handle's reels can still be reached without one.
+    (set $GLEAN_IG_SESSIONID or `ig_sessionid` in config). Only *search* is gated:
+    `profile()` and `list()` both answer anonymously, so a known handle is still
+    reachable without one.
     """
     if not _cookie(cfg):
         raise RuntimeError(
             "Instagram profile search requires a session cookie — anonymous search "
             "is blocked by Instagram. Copy the `sessionid` cookie from your logged-in "
             "instagram.com and set GLEAN_IG_SESSIONID (or ig_sessionid in config). "
-            "`glean ig profile` needs the same cookie; to reach a known handle's reels "
-            "without one, use `glean ig list <@handle>`."
+            "`glean ig profile` and `glean ig list` both work without one, so a handle you "
+            "already know is still reachable."
         )
     q = requests.utils.quote(query.strip())
     url = f"https://www.instagram.com/web/search/topsearch/?context=blended&query={q}&count={limit}"

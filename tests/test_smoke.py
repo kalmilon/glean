@@ -419,3 +419,50 @@ def test_reels_for_sound_stops_at_limit(monkeypatch):
     })
 
     assert len(instagram.reels_for_sound("999", cfg=None, limit=3)) == 3
+
+
+class _Resp:
+    def __init__(self, status, payload=None):
+        self.status_code = status
+        self._payload = payload if payload is not None else {}
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+    def json(self):
+        return self._payload
+
+
+def test_auth_failure_is_not_retried(monkeypatch):
+    """401 four times over seven seconds reported "failed after 4 attempts" — it reads as a flaky
+    network and sends you looking for one. A wall must be named on the first hit."""
+    from glean.sources import instagram
+
+    calls = []
+    monkeypatch.setattr(instagram.requests, "get", lambda *a, **k: calls.append(1) or _Resp(401))
+    monkeypatch.setattr(instagram.time, "sleep", lambda *_: None)
+
+    with pytest.raises(RuntimeError, match="session cookie"):
+        instagram._get_json("https://example.test/x")
+    assert len(calls) == 1, "an auth wall must not be retried"
+
+
+def test_rate_limit_is_retried_and_named(monkeypatch):
+    """429 is the failure worth waiting out, and the message should say it usually clears."""
+    from glean.sources import instagram
+
+    slept = []
+    monkeypatch.setattr(instagram.requests, "get", lambda *a, **k: _Resp(429))
+    monkeypatch.setattr(instagram.time, "sleep", lambda s: slept.append(s))
+
+    with pytest.raises(RuntimeError, match="clears on its own"):
+        instagram._get_json("https://example.test/x")
+    assert len(slept) == instagram._RETRIES - 1
+    assert slept[0] >= instagram._RATE_LIMIT_BACKOFF, "429 backs off harder than a generic blip"
+
+
+def test_successful_request_returns_payload(monkeypatch):
+    from glean.sources import instagram
+
+    monkeypatch.setattr(instagram.requests, "get", lambda *a, **k: _Resp(200, {"ok": True}))
+    assert instagram._get_json("https://example.test/x") == {"ok": True}
