@@ -1,7 +1,8 @@
 [project]
 name = "glean"
 version = "0.1.0"
-description = "Local-first research tool: transcripts + metadata from YouTube, Instagram, Twitch, and X."
+description = "Local-first social research: public LinkedIn discovery plus transcripts and metadata from social video. MIT licensed."
+license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.11"
 # musl-safe, pure-Python only. Heavy lifting is done by binaries (ffmpeg, yt-dlp,
